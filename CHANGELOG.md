@@ -1,4 +1,10 @@
 
+## [0.1.7](https://github.com/fiftydinar/process-control/compare/v0.1.6...v0.1.7) - 2026-11-10
+
+### Features
+
+- *(ui)* Add larger row sizes - ([29836ca](https://github.com/fiftydinar/process-control/commit/29836ca6e358ee51272636d17106ebf54cd4f3a3))
+
 ## [0.1.6](https://github.com/fiftydinar/process-control/compare/v0.1.5...v0.1.6) - 2026-11-10
 
 ### Bug Fixes
