@@ -315,10 +315,11 @@ fit an app like this; see the "One OS only" note below.
 
 ### Layout, as this app actually is
 
-The shape above is the organization's; this app has no `build.rs`, no
-`assets/icon.ico` and no `packaging/macos`, since nothing here builds for
-Windows or macOS. `src/desktop.rs` is the app's own, and `src/platform/linux/`
-holds the readers.
+The shape above is the organization's; this app has no `build.rs` and no
+`packaging/macos`, since nothing here builds for Windows or macOS.
+`scripts/package.sh` only makes the Linux archive, and `scripts/icons.sh`
+writes no Windows `.ico`. `src/desktop.rs` is the app's own, and
+`src/platform/linux/` holds the readers.
 
 ### Reading the system
 
@@ -359,18 +360,16 @@ thread. Adding a dependency that reads a new image format belongs there.
 
 The shared guidelines ask every app to build on Linux, macOS and Windows. This
 one cannot: a task manager is a reader of the process table, and this reads
-Linux's. Two shared pieces assume the three platforms and are **not** edited
-here, because a sync overwrites them:
+Linux's. The shared workflows assume the three platforms, so this app carries
+Linux-only replacements instead of calling them:
 
-- `.github/workflows/ci.yml` runs the shared `app-ci`, whose `test` job has a
-  hardcoded `[ubuntu-latest, macos-latest, windows-latest]` matrix. Those two
-  jobs fail on a target that does not build.
-- `.github/workflows/release.yml` runs the shared `app-release`, whose `build`
-  matrix is hardcoded to the five Linux, macOS and Windows targets.
+- `.github/workflows/ci.yml` keeps the shared lint, test, smoke and docs jobs
+  but runs them on `ubuntu-latest` alone, with no macOS or Windows matrix.
+- `.github/workflows/release.yml` builds the Linux archive, onelf bundle and
+  AppImage on GitHub, then publishes the draft release. It keeps the name and
+  `tag` input release-plz dispatches, so a release still starts by itself.
 
-Both need a `platforms` input upstream in pkgforge-apps/.github, or a
-Linux-only variant, before this app's CI and releases go green. Do not paper
-over it by adding a stub platform back.
+Do not paper over the missing platforms by adding a stub platform back.
 
 ### Things to know
 
