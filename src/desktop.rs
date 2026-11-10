@@ -62,23 +62,15 @@ impl Index {
         index
     }
 
-    /// Reads the entries in one directory, without descending into it.
+    /// Reads the entries in one directory, descending into it.
     ///
-    /// An entry in a subdirectory is not one the desktop shows: the menus
-    /// read the top level of each directory, with subdirectories there to
-    /// group icons rather than entries.
+    /// The desktop entry specification allows an entry in a subdirectory of
+    /// `applications`, such as `kde4/foo.desktop`, and gives it the desktop
+    /// file ID `kde4-foo.desktop`. Dropping those loses applications that
+    /// install themselves below the top level.
     fn read_dir(&mut self, directory: &Path) {
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            return;
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("desktop"))
-            })
-            .collect();
+        let mut paths = Vec::new();
+        collect_desktop_files(directory, 0, &mut paths);
         // The order the file system lists them in is not stable, and an entry
         // found twice should be the one the desktop itself would use.
         paths.sort();
@@ -182,7 +174,50 @@ fn names_of(entry: &Entry) -> Vec<String> {
     if let Some(stem) = entry.path.file_stem().and_then(|stem| stem.to_str()) {
         add(stem);
     }
+    if let Some(id) = desktop_id(&entry.path) {
+        add(&id);
+        add(id.strip_suffix(".desktop").unwrap_or(&id));
+    }
     names
+}
+
+/// The desktop file ID of a path under an `applications` directory.
+///
+/// The ID is the path relative to `applications`, with `/` turned into `-`:
+/// `kde4/foo.desktop` is `kde4-foo.desktop`. An entry outside an
+/// `applications` directory has no ID and is matched by its file name alone.
+fn desktop_id(path: &Path) -> Option<String> {
+    let components: Vec<_> = path.components().collect();
+    let start = components
+        .iter()
+        .rposition(|component| component.as_os_str() == "applications")?;
+    let relative: Vec<&str> = components[start + 1..]
+        .iter()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    if relative.is_empty() {
+        return None;
+    }
+    Some(relative.join("-"))
+}
+
+/// Collects every `.desktop` file under `directory`, to a bounded depth.
+fn collect_desktop_files(directory: &Path, depth: usize, paths: &mut Vec<PathBuf>) {
+    const MAX_DEPTH: usize = 16;
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("desktop"))
+        {
+            paths.push(path);
+        } else if depth < MAX_DEPTH && entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            collect_desktop_files(&path, depth + 1, paths);
+        }
+    }
 }
 
 /// The program a desktop entry's `Exec` line runs, as a file name.
@@ -244,9 +279,10 @@ pub fn parse(text: &str, path: &Path) -> Option<Entry> {
             "Icon" => entry.icon = value.to_string(),
             "StartupWMClass" => entry.startup_wm_class = value.to_string(),
             "Exec" => entry.exec = value.to_string(),
-            "Hidden" | "NoDisplay" => {
-                entry.hidden |= value.eq_ignore_ascii_case("true");
-            }
+            // `NoDisplay` hides an entry from menus, but the application
+            // still exists: its name, icon and window class are what a running
+            // process is matched with.
+            "Hidden" => entry.hidden = value.eq_ignore_ascii_case("true"),
             // A Link or Directory entry names a URL or a folder, not a
             // program to run.
             "Type" if !value.eq_ignore_ascii_case("Application") => entry.hidden = true,
@@ -309,6 +345,38 @@ StartupWMClass=Firefox
     }
 
     #[test]
+    fn a_desktop_id_turns_subdirectory_slashes_into_dashes() {
+        assert_eq!(
+            desktop_id(Path::new("/usr/share/applications/kde4/foo.desktop")),
+            Some("kde4-foo.desktop".to_string())
+        );
+        assert_eq!(
+            desktop_id(Path::new("/usr/share/applications/foo.desktop")),
+            Some("foo.desktop".to_string())
+        );
+        assert_eq!(desktop_id(Path::new("/tmp/foo.desktop")), None);
+    }
+
+    #[test]
+    fn an_entry_in_a_subdirectory_is_still_an_application() {
+        let directory =
+            std::env::temp_dir().join(format!("process-control-desktop-{}", std::process::id()));
+        let nested = directory.join("applications").join("kde4");
+        std::fs::create_dir_all(&nested).expect("the directory is made");
+        std::fs::write(
+            nested.join("foo.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Foo\n",
+        )
+        .expect("the entry is written");
+        let mut index = Index::default();
+        index.read_dir(&directory.join("applications"));
+        std::fs::remove_dir_all(&directory).expect("the temporary directory is removed");
+        assert_eq!(index.len(), 1);
+        assert!(index.by_class_name("kde4-foo").is_some());
+        assert!(index.by_class_name("foo").is_some());
+    }
+
+    #[test]
     fn only_the_desktop_entry_group_is_read() {
         // A file also carries action groups, which repeat the same keys.
         let text = "\
@@ -327,9 +395,17 @@ Exec=nautilus
 
     #[test]
     fn a_hidden_entry_is_not_an_application() {
-        let text = "[Desktop Entry]\nType=Application\nName=Hidden Thing\nNoDisplay=true\n";
+        let text = "[Desktop Entry]\nType=Application\nName=Hidden Thing\nHidden=true\n";
         let entry = parse(text, Path::new("/tmp/hidden.desktop")).unwrap();
         assert!(!entry.is_application());
+    }
+
+    #[test]
+    fn an_entry_hidden_from_menus_still_matches_a_window() {
+        let text = "[Desktop Entry]\nType=Application\nName=Hidden Thing\nNoDisplay=true\nStartupWMClass=Thing\n";
+        let entry = parse(text, Path::new("/tmp/no-display.desktop")).unwrap();
+        assert!(entry.is_application());
+        assert_eq!(entry.startup_wm_class, "Thing");
     }
 
     #[test]

@@ -807,6 +807,26 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
         clip.max,
     ));
 
+    if visible.is_empty() {
+        let hint = if app.sample.error.is_some() {
+            "Nothing is being read on this system"
+        } else if !app.filter.trim().is_empty() {
+            "Nothing matches that filter"
+        } else {
+            "Reading the process table..."
+        };
+        ui.allocate_ui_with_layout(
+            ui.available_size(),
+            Layout::centered_and_justified(egui::Direction::TopDown),
+            |ui| {
+                ui.label(RichText::new(hint).color(ui.visuals().weak_text_color()));
+            },
+        );
+        ui.set_clip_rect(clip);
+        column_titles(app, ui, header, &places);
+        return;
+    }
+
     let mut clicked: Option<(usize, egui::PointerButton)> = None;
     // A table's rows sit right against each other: the row height already
     // holds the gap a widget would want.
@@ -879,19 +899,6 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
             }
             _ => {}
         }
-    }
-
-    if visible.is_empty() {
-        ui.centered_and_justified(|ui| {
-            let hint = if app.sample.error.is_some() {
-                "Nothing is being read on this system"
-            } else if !app.filter.trim().is_empty() {
-                "Nothing matches that filter"
-            } else {
-                "Reading the process table..."
-            };
-            ui.label(RichText::new(hint).color(ui.visuals().weak_text_color()));
-        });
     }
 }
 
@@ -1614,6 +1621,20 @@ mod tests {
         Harness::builder()
             .with_size(egui::vec2(1_040.0, 660.0))
             .build_ui_state(|ui, app: &mut crate::app::App| draw(app, ui), app)
+    }
+
+    #[test]
+    fn an_empty_filter_says_so_inside_the_table() {
+        let mut harness = harness();
+        harness.state_mut().filter = "no-such-process".to_string();
+        harness.run();
+        let hint = harness.get_by_label("Nothing matches that filter");
+        let window = harness.ctx.input(|input| input.viewport_rect());
+        assert!(
+            window.contains_rect(hint.rect()),
+            "the hint is drawn inside the window: {:?}",
+            hint.rect()
+        );
     }
 
     #[test]

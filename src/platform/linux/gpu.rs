@@ -37,12 +37,15 @@ pub fn process(directory: &Path) -> (u64, u64) {
 
 /// The engine time and video memory a `fdinfo` file reports.
 ///
-/// An engine line reads `drm-engine-render: 1234567890 ns`, and a memory line
-/// `drm-memory-vram: 51200 KiB`. Anything else in the file is another
-/// driver's business.
+/// An engine line reads `drm-engine-render: 1234567890 ns`. A memory line is
+/// either the current `drm-memory-*` family or the newer `drm-resident-*`
+/// family, and each family's regions add up to the memory the client holds.
+/// Anything else in the file is another driver's business.
 pub fn parse_fdinfo(text: &str) -> (u64, u64) {
     let mut time = 0;
-    let mut memory = 0;
+    let mut resident = 0;
+    let mut legacy = 0;
+    let mut has_resident = false;
     for line in text.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
@@ -57,14 +60,19 @@ pub fn parse_fdinfo(text: &str) -> (u64, u64) {
             {
                 time += nanoseconds;
             }
+        } else if key.starts_with("drm-resident-")
+            && let Some(bytes) = parse_size(value)
+        {
+            resident += bytes;
+            has_resident = true;
         } else if key.starts_with("drm-memory-")
             && key != "drm-memory"
             && let Some(bytes) = parse_size(value)
         {
-            memory = memory.max(bytes);
+            legacy += bytes;
         }
     }
-    (time, memory)
+    (time, if has_resident { resident } else { legacy })
 }
 
 /// A size as the kernel writes it, such as `51200 KiB`.
@@ -155,7 +163,28 @@ drm-memory-cpu:\t8192 KiB
 ";
         let (time, memory) = parse_fdinfo(text);
         assert_eq!(time, 1_234_567_990);
-        assert_eq!(memory, 51200 * 1024, "the largest region is the one used");
+        assert_eq!(
+            memory,
+            (51200 + 1024 + 8192) * 1024,
+            "every region the client holds adds up"
+        );
+    }
+
+    #[test]
+    fn a_fdinfo_file_with_resident_regions_reports_them() {
+        let text = "\
+drm-engine-render: 100 ns
+drm-resident-gtt: 128 KiB
+drm-resident-vram0: 4 MiB
+drm-memory-gtt: 64 KiB
+";
+        let (time, memory) = parse_fdinfo(text);
+        assert_eq!(time, 100);
+        assert_eq!(
+            memory,
+            (128 + 4 * 1024) * 1024,
+            "the newer resident stats are used when present"
+        );
     }
 
     #[test]

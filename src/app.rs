@@ -239,7 +239,11 @@ impl App {
             .and_then(Theme::from_name)
             .unwrap_or_else(Theme::first_run);
         theme::apply(egui_ctx, theme);
-        let sampler = Sampler::start(config.refresh_span());
+        let repaint = {
+            let ctx = egui_ctx.clone();
+            move || ctx.request_repaint()
+        };
+        let sampler = Sampler::start(config.refresh_span(), repaint);
         Self {
             smoke,
             persist: !smoke,
@@ -425,20 +429,26 @@ impl App {
                 self.config.show_kernel_threads.unwrap_or(false),
                 &folded,
             ),
-            ViewMode::Applications => apps::applications(&self.sample, &self.applications, &folded),
+            ViewMode::Applications => apps::applications(
+                &self.sample,
+                &self.applications,
+                &folded,
+                self.config.show_kernel_threads.unwrap_or(false),
+            ),
         };
         apps::sort(&mut self.rows, self.sort, self.descending);
     }
 
     /// The rows the filter lets through, with a row kept when anything it
-    /// stands for matches so a parent whose child matches stays reachable.
+    /// stands for matches. A row's ancestors are kept as well, so a matching
+    /// child stays under the parent that gives it its depth and context.
     pub fn visible_rows(&self) -> Vec<usize> {
         let filter = self.filter.trim().to_lowercase();
         if filter.is_empty() {
             return (0..self.rows.len()).collect();
         }
         let index = self.sample.index();
-        (0..self.rows.len())
+        let mut keep: HashSet<usize> = (0..self.rows.len())
             .filter(|position| {
                 let row = &self.rows[*position];
                 row.name.to_lowercase().contains(&filter)
@@ -454,7 +464,19 @@ impl App {
                             })
                     })
             })
-            .collect()
+            .collect();
+        for position in keep.clone() {
+            let mut parent = self.rows[position].parent;
+            while let Some(index) = parent {
+                if index >= self.rows.len() || !keep.insert(index) {
+                    break;
+                }
+                parent = self.rows[index].parent;
+            }
+        }
+        let mut visible: Vec<usize> = keep.into_iter().collect();
+        visible.sort_unstable();
+        visible
     }
 
     /// Changes what the table is sorted by, keeping the direction when the
@@ -555,6 +577,9 @@ impl App {
     }
 
     /// Adds a row to the selection, or takes it out.
+    ///
+    /// The row stands for the same processes whether it is being added or
+    /// removed: an application row takes its helpers with it both ways.
     pub fn toggle_row(&mut self, position: usize) {
         let Some(row) = self.rows.get(position) else {
             return;
@@ -563,15 +588,22 @@ impl App {
             return;
         }
         let own = row.pids.first().copied().unwrap_or_default();
+        let mut pids = row.pids.clone();
+        pids.extend(self.descendants(own));
         if self.selection.contains(&own) {
-            self.selection.retain(|pid| *pid != own);
+            self.selection.retain(|pid| !pids.contains(pid));
         } else {
-            self.selection.extend(row.pids.iter().copied());
+            self.selection.extend(pids);
+            self.selection.sort_unstable();
+            self.selection.dedup();
             self.anchor = Some(own);
         }
     }
 
     /// Extends the selection from the anchor to the row at `position`.
+    ///
+    /// Only rows the filter is showing take part: selecting a range must not
+    /// quietly include processes the user was never shown.
     pub fn extend_to(&mut self, position: usize) {
         if position >= self.rows.len() {
             return;
@@ -579,23 +611,22 @@ impl App {
         let Some(anchor) = self.anchor else {
             return self.select_row(position);
         };
-        let Some(from) = self
-            .rows
+        let visible = self.visible_rows();
+        let Some(from) = visible
             .iter()
-            .position(|row| row.pids.first() == Some(&anchor))
+            .position(|row| self.rows[*row].pids.first() == Some(&anchor))
         else {
             return self.select_row(position);
         };
-        let (start, end) = if from <= position {
-            (from, position)
-        } else {
-            (position, from)
+        let Some(to) = visible.iter().position(|row| *row == position) else {
+            return self.select_row(position);
         };
+        let (start, end) = if from <= to { (from, to) } else { (to, from) };
         let mut pids = Vec::new();
-        for row in &self.rows[start..=end] {
+        for row in &visible[start..=end] {
             // A heading inside the range stands for no process, so it adds
             // nothing rather than clearing what the range covers.
-            pids.extend(row.pids.iter().copied());
+            pids.extend(self.rows[*row].pids.iter().copied());
         }
         pids.sort_unstable();
         pids.dedup();
@@ -651,18 +682,25 @@ impl App {
 
     /// Sends a signal to every selected process and says how it went.
     pub fn deliver(&mut self, signal: Signal) {
-        let pids = match &self.confirmation {
+        let requested = match &self.confirmation {
             Some(confirmation) if confirmation.signal == signal => confirmation.pids.clone(),
             _ => self.selection.clone(),
         };
         self.confirmation = None;
+        // The app's own pid is left alone: a stop of the task manager is not
+        // what a click on its own row should do. The status must not claim a
+        // signal was sent to a process that was skipped.
+        let own_pid = std::process::id() as i32;
+        let pids: Vec<i32> = requested
+            .into_iter()
+            .filter(|pid| *pid != own_pid)
+            .collect();
+        if pids.is_empty() {
+            self.status = Some("Process Control does not stop itself.".to_string());
+            return;
+        }
         let mut failed = Vec::new();
         for pid in &pids {
-            // The app's own pid is left alone: a stop of the task manager is
-            // not what a click on its own row should do.
-            if *pid == std::process::id() as i32 {
-                continue;
-            }
             if let Err(error) = crate::platform::signal(*pid, signal) {
                 failed.push(error);
             }
@@ -902,16 +940,67 @@ mod tests {
     }
 
     #[test]
-    fn the_filter_keeps_the_rows_that_match() {
+    fn the_filter_keeps_the_rows_that_match_and_their_parents() {
         let mut app = app();
         app.filter = "child".to_string();
-        let visible = app.visible_rows();
-        assert_eq!(visible.len(), 1);
-        assert_eq!(app.rows[visible[0]].name, "child");
+        let names: Vec<&str> = app
+            .visible_rows()
+            .into_iter()
+            .map(|row| app.rows[row].name.as_str())
+            .collect();
+        assert_eq!(names, ["init", "shell", "child"]);
         app.filter = "2".to_string();
         assert!(!app.visible_rows().is_empty(), "a pid is a filter too");
         app.filter = String::new();
         assert_eq!(app.visible_rows().len(), app.rows.len());
+    }
+
+    #[test]
+    fn a_filtered_range_does_not_select_hidden_rows() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, true);
+        app.sample = Sample {
+            processes: vec![
+                process(1, 0, "init"),
+                process(10, 1, "ax"),
+                process(11, 1, "bb"),
+                process(12, 1, "cx"),
+            ],
+            ..Sample::default()
+        };
+        app.applications = Applications::new(&app.sample, &[], &Index::default());
+        app.applications.resolve(&app.sample);
+        app.rebuild();
+        app.filter = "x".to_string();
+        let visible = app.visible_rows();
+        let first = visible
+            .iter()
+            .position(|row| app.rows[*row].name == "ax")
+            .expect("ax is visible");
+        let last = visible
+            .iter()
+            .position(|row| app.rows[*row].name == "cx")
+            .expect("cx is visible");
+        app.select_row(visible[first]);
+        app.extend_to(visible[last]);
+        assert_eq!(app.selection, [10, 12], "hidden 11 is not selected");
+    }
+
+    #[test]
+    fn toggling_an_application_off_drops_all_its_processes() {
+        let mut app = app();
+        let row = app
+            .rows
+            .iter()
+            .position(|row| row.pids == [1])
+            .expect("init has a row");
+        app.select_row(row);
+        app.toggle_row(row);
+        assert!(
+            app.selection.is_empty(),
+            "the descendant selected with the row goes too: {:?}",
+            app.selection
+        );
     }
 
     #[test]
@@ -1040,6 +1129,14 @@ mod tests {
         app.deliver(Signal::Kill);
         // Still running, which is the point.
         assert!(app.status.is_some());
+        assert!(
+            !app.status
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Sent"),
+            "the status does not claim a skipped signal was sent: {:?}",
+            app.status
+        );
     }
 
     #[test]
