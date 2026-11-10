@@ -83,10 +83,13 @@ fn window(connection: &RustConnection, id: Xid) -> Option<Window> {
 
 /// A window's title, preferring the UTF-8 property to the legacy one.
 fn title(connection: &RustConnection, id: Xid) -> String {
+    // `_NET_WM_NAME` is of type `UTF8_STRING`, not `STRING`: asking for the
+    // wrong type makes a server refuse to hand the title over.
     let utf8 = intern(connection, WM_NAME_UTF8);
+    let utf8_type = intern(connection, "UTF8_STRING").unwrap_or(AtomEnum::STRING.into());
     if let Some(atom) = utf8
         && atom != x11rb::NONE
-        && let Some(value) = property(connection, id, atom, AtomEnum::STRING)
+        && let Some(value) = property(connection, id, atom, utf8_type)
         && let Ok(text) = String::from_utf8(value)
     {
         return text.trim_end_matches('\0').to_string();

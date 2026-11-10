@@ -189,9 +189,11 @@ pub fn whole_disks() -> Vec<String> {
 /// Whether a device is one whose counters are not storage the user waited on.
 ///
 /// A loop device holds a file that is already on a disk, and a ram disk is
-/// memory: counting either would report the same bytes twice.
+/// memory: counting either would report the same bytes twice. A device-mapper
+/// or software RAID device counts the same bytes as the disks underneath it,
+/// so only the underlying disks are counted when they are present.
 fn is_virtual(name: &str) -> bool {
-    ["loop", "ram", "zram", "fd"]
+    ["loop", "ram", "zram", "fd", "dm-", "md", "bcache"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
 }
@@ -254,11 +256,16 @@ pub fn parse_diskstats(text: &str, disks: &[String]) -> (u64, u64) {
 /// Loopback traffic never leaves the machine, so counting it would make a
 /// local transfer read as network use.
 pub fn network_io() -> (HashMap<String, u64>, HashMap<String, u64>) {
+    let Ok(text) = std::fs::read_to_string("/proc/net/dev") else {
+        return (HashMap::new(), HashMap::new());
+    };
+    parse_net_dev(&text)
+}
+
+/// The received and sent bytes of every interface in one `/proc/net/dev`.
+fn parse_net_dev(text: &str) -> (HashMap<String, u64>, HashMap<String, u64>) {
     let mut read = HashMap::new();
     let mut written = HashMap::new();
-    let Ok(text) = std::fs::read_to_string("/proc/net/dev") else {
-        return (read, written);
-    };
     for line in text.lines().skip(2) {
         let Some((name, values)) = line.split_once(':') else {
             continue;
@@ -356,12 +363,36 @@ mod tests {
     }
 
     #[test]
+    fn stacked_devices_are_not_counted_alongside_their_parts() {
+        assert!(is_virtual("loop0"));
+        assert!(is_virtual("ram0"));
+        assert!(is_virtual("dm-1"));
+        assert!(is_virtual("md0"));
+        assert!(!is_virtual("sda"));
+        assert!(!is_virtual("nvme0n1"));
+    }
+
+    #[test]
     fn a_partition_is_recognised_however_its_disk_is_named() {
         assert!(is_partition_of("sda1", "sda"));
         assert!(is_partition_of("nvme0n1p2", "nvme0n1"));
         assert!(!is_partition_of("sda", "sda"));
         assert!(!is_partition_of("sdb", "sda"));
         assert!(!is_partition_of("nvme1n1", "nvme0n1"));
+    }
+
+    #[test]
+    fn network_counters_skip_the_loopback_interface() {
+        let text = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0
+  eth0: 300 3 0 0 0 0 0 0 400 4 0 0 0 0 0 0
+";
+        let (read, written) = parse_net_dev(text);
+        assert_eq!(read.get("eth0"), Some(&300));
+        assert_eq!(written.get("eth0"), Some(&400));
+        assert!(!read.contains_key("lo"));
     }
 
     #[test]
@@ -380,6 +411,11 @@ mod tests {
         // reports traffic, and this must not be an error.
         let _ = disk_io(&whole_disks());
         let (received, sent) = network_io();
-        assert!(!received.is_empty() || !sent.is_empty());
+        assert_eq!(
+            received.len(),
+            sent.len(),
+            "an interface is read for both directions"
+        );
+        assert!(received.keys().all(|name| sent.contains_key(name)));
     }
 }

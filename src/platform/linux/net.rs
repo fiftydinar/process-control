@@ -30,6 +30,12 @@ const NLMSG_HEADER: usize = 16;
 /// The size of one `inet_diag_req_v2`, which is all the request body is.
 const REQUEST_BODY: usize = 56;
 
+/// The size of one `inet_diag_msg`, which is the body of every answer.
+const REPLY_BODY: usize = 72;
+
+/// The offset of `idiag_inode` in `inet_diag_msg`.
+const REPLY_INODE: usize = 68;
+
 /// `SOCK_DIAG_BY_FAMILY`: the request that dumps sockets of one family.
 const SOCK_DIAG_BY_FAMILY: u16 = 20;
 
@@ -47,9 +53,6 @@ const BYTES_RECEIVED: usize = 128;
 
 /// How many bytes of `tcp_info` the counters at the end need.
 const TCP_INFO_NEEDED: usize = BYTES_RECEIVED + 8;
-
-/// The attribute that carries a socket's inode.
-const INET_DIAG_INODE: u16 = 3;
 
 /// The attribute that carries a socket's `tcp_info`.
 const ATTR_TCP_INFO: u16 = 2;
@@ -207,14 +210,14 @@ fn parse_messages(data: &[u8], sockets: &mut Vec<Socket>) -> bool {
 
 /// Reads one socket out of an `inet_diag_msg` and its attributes.
 ///
-/// The body is 56 bytes: the family, the state, the timer and retransmit
+/// The body is 72 bytes: the family, the state, the timer and retransmit
 /// counts, the two ports, the two addresses as sixteen bytes each, the
-/// interface and the cookie. The inode and the byte counters follow as
-/// attributes.
+/// interface, the cookie, the queue lengths, the owner and the inode. The
+/// byte counters follow as a `tcp_info` attribute.
 fn parse_socket(message: &[u8]) -> Option<Socket> {
     let body = message.get(NLMSG_HEADER..)?;
-    let attributes = body.get(56..)?;
-    let mut inode = None;
+    let inode = u32::from_ne_bytes(body.get(REPLY_INODE..REPLY_INODE + 4)?.try_into().ok()?) as u64;
+    let attributes = body.get(REPLY_BODY..)?;
     let mut received = 0;
     let mut sent = 0;
     let mut offset = 0;
@@ -225,30 +228,22 @@ fn parse_socket(message: &[u8]) -> Option<Socket> {
             break;
         }
         let value = &attributes[offset + 4..offset + length];
-        match kind {
-            INET_DIAG_INODE => {
-                inode = value
-                    .get(..4)
-                    .map(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap_or([0; 4])) as u64);
-            }
-            ATTR_TCP_INFO if value.len() >= TCP_INFO_NEEDED => {
-                sent = u64::from_ne_bytes(
-                    value[BYTES_ACKED..BYTES_ACKED + 8]
-                        .try_into()
-                        .unwrap_or([0; 8]),
-                );
-                received = u64::from_ne_bytes(
-                    value[BYTES_RECEIVED..BYTES_RECEIVED + 8]
-                        .try_into()
-                        .unwrap_or([0; 8]),
-                );
-            }
-            _ => {}
+        if kind == ATTR_TCP_INFO && value.len() >= TCP_INFO_NEEDED {
+            sent = u64::from_ne_bytes(
+                value[BYTES_ACKED..BYTES_ACKED + 8]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            );
+            received = u64::from_ne_bytes(
+                value[BYTES_RECEIVED..BYTES_RECEIVED + 8]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            );
         }
         offset += (length + 3) & !3;
     }
     Some(Socket {
-        inode: inode?,
+        inode,
         received,
         sent,
     })
@@ -305,12 +300,11 @@ mod tests {
 
     #[test]
     fn an_attribute_block_is_read_into_a_socket() {
-        // A message body of 56 bytes, then an inode and a `tcp_info` whose
-        // two counters sit where the kernel puts them.
-        let mut body = vec![0u8; 56];
-        body.extend_from_slice(&8u16.to_ne_bytes());
-        body.extend_from_slice(&INET_DIAG_INODE.to_ne_bytes());
-        body.extend_from_slice(&4242u32.to_ne_bytes());
+        // A real `inet_diag_msg` is 72 bytes, with the inode in the last
+        // four, then a `tcp_info` whose two counters sit where the kernel
+        // puts them.
+        let mut body = vec![0u8; REPLY_BODY];
+        body[REPLY_INODE..REPLY_INODE + 4].copy_from_slice(&4242u32.to_ne_bytes());
         let mut info = vec![0u8; TCP_INFO_NEEDED];
         info[BYTES_ACKED..BYTES_ACKED + 8].copy_from_slice(&900u64.to_ne_bytes());
         info[BYTES_RECEIVED..BYTES_RECEIVED + 8].copy_from_slice(&1500u64.to_ne_bytes());
@@ -332,12 +326,25 @@ mod tests {
     }
 
     #[test]
-    fn a_message_without_an_inode_is_left_out() {
-        let mut message = vec![0u8; NLMSG_HEADER + 56];
-        message.extend_from_slice(&8u16.to_ne_bytes());
-        message.extend_from_slice(&ATTR_TCP_INFO.to_ne_bytes());
-        message.extend_from_slice(&[0u8; 4]);
+    fn a_message_too_short_for_an_inode_is_left_out() {
+        let message = vec![0u8; NLMSG_HEADER + REPLY_BODY - 1];
         assert!(parse_socket(&message).is_none());
+    }
+
+    #[test]
+    fn a_real_tcp_socket_is_in_the_dump() {
+        use std::os::fd::AsRawFd as _;
+
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener is made");
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", listener.as_raw_fd()))
+            .expect("the listener has a descriptor link");
+        let inode = inode_of(&link.to_string_lossy()).expect("the listener is a socket");
+        let sockets = socket_bytes().expect("netlink is reachable");
+        assert!(
+            sockets.iter().any(|socket| socket.inode == inode),
+            "the dump holds the listener's inode {inode}: {sockets:?}"
+        );
     }
 
     #[test]
@@ -347,17 +354,6 @@ mod tests {
         data[4..6].copy_from_slice(&3u16.to_ne_bytes());
         let mut sockets = Vec::new();
         assert!(parse_messages(&data, &mut sockets));
-    }
-
-    #[test]
-    fn the_kernel_answers_the_request() {
-        // Even with no TCP socket open, the request must be accepted: a
-        // refusal here would mean the request itself is malformed, and the
-        // column would read zero on every machine.
-        let sockets = socket_bytes().expect("netlink is reachable");
-        for socket in &sockets {
-            assert!(socket.inode > 0);
-        }
     }
 
     #[test]

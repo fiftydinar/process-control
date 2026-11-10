@@ -57,8 +57,9 @@ impl Sampler {
     /// The thread reads once as soon as it starts, so the window has something
     /// to draw at once, and again after each interval. A read that failed
     /// leaves its error in the sample, which the window shows rather than
-    /// hiding.
-    pub fn start(interval: Duration) -> Self {
+    /// hiding. `wake` is called after every sample, which is what asks the
+    /// window to draw it: an idle window does not run frames on its own.
+    pub fn start(interval: Duration, wake: impl Fn() + Send + 'static) -> Self {
         let (sample_sender, sample_receiver) = mpsc::channel();
         let shared = Arc::new((
             Mutex::new(Shared {
@@ -70,7 +71,7 @@ impl Sampler {
         let thread_shared = Arc::clone(&shared);
         let thread = thread::Builder::new()
             .name("sampler".to_string())
-            .spawn(move || run(&sample_sender, &thread_shared))
+            .spawn(move || run(&sample_sender, &thread_shared, wake))
             .expect("the sampler thread starts");
         Self {
             shared,
@@ -142,7 +143,7 @@ impl Drop for Sampler {
 }
 
 /// The reading loop.
-fn run(samples: &Sender<Sample>, shared: &Arc<(Mutex<Shared>, Condvar)>) {
+fn run(samples: &Sender<Sample>, shared: &Arc<(Mutex<Shared>, Condvar)>, wake: impl Fn()) {
     let mut reader = Reader::new();
     loop {
         let started = Instant::now();
@@ -150,6 +151,7 @@ fn run(samples: &Sender<Sample>, shared: &Arc<(Mutex<Shared>, Condvar)>) {
         if samples.send(sample).is_err() {
             return;
         }
+        wake();
         match wait(shared, &started) {
             Next::Again => {}
             Next::Stop => return,
@@ -205,7 +207,7 @@ mod tests {
 
     #[test]
     fn the_sampler_produces_samples() {
-        let mut sampler = Sampler::start(Duration::from_millis(100));
+        let mut sampler = Sampler::start(Duration::from_millis(100), || {});
         let deadline = Instant::now() + Duration::from_secs(20);
         while sampler.received() < 2 && Instant::now() < deadline {
             sampler.poll();
@@ -221,7 +223,7 @@ mod tests {
 
     #[test]
     fn the_second_sample_has_rates() {
-        let mut sampler = Sampler::start(Duration::from_millis(150));
+        let mut sampler = Sampler::start(Duration::from_millis(150), || {});
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut last = None;
         while sampler.received() < 3 && Instant::now() < deadline {
@@ -241,10 +243,27 @@ mod tests {
     }
 
     #[test]
+    fn a_sample_wakes_the_window() {
+        let woke = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&woke);
+        let _sampler = Sampler::start(Duration::from_millis(50), move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !woke.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            woke.load(std::sync::atomic::Ordering::SeqCst),
+            "a sample asks the window to draw it"
+        );
+    }
+
+    #[test]
     fn a_refresh_arrives_before_the_interval_ends() {
         // A minute between reads, so the only way a second sample can arrive
         // is the refresh being answered.
-        let mut sampler = Sampler::start(Duration::from_secs(60));
+        let mut sampler = Sampler::start(Duration::from_secs(60), || {});
         let deadline = Instant::now() + Duration::from_secs(20);
         while sampler.received() < 1 && Instant::now() < deadline {
             sampler.poll();

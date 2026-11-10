@@ -81,7 +81,7 @@ impl Icons {
             // icon themes, which is milliseconds that the drawing thread
             // should not spend, once per icon name either way.
             self.asked.push(name.to_string());
-            self.worker().wanted.send(name.to_string()).ok();
+            self.worker(ctx).wanted.send(name.to_string()).ok();
         }
         self.take(ctx);
         self.textures.get(name).and_then(Clone::clone)
@@ -143,10 +143,11 @@ impl Icons {
     }
 
     /// The decoding thread, started when it is first needed.
-    fn worker(&mut self) -> &mut Worker {
+    fn worker(&mut self, ctx: &egui::Context) -> &mut Worker {
         self.worker.get_or_insert_with(|| {
             let (wanted, wanted_receiver) = mpsc::channel::<String>();
             let (results, result_receiver) = mpsc::channel();
+            let ctx = ctx.clone();
             thread::Builder::new()
                 .name("icons".to_string())
                 .spawn(move || {
@@ -155,6 +156,9 @@ impl Icons {
                         if results.send((name, image)).is_err() {
                             return;
                         }
+                        // The window may be idle between samples, so the
+                        // decoded icon has to ask for the frame that shows it.
+                        ctx.request_repaint();
                     }
                 })
                 .expect("the icon thread starts");
@@ -203,7 +207,9 @@ fn search(theme: &Path, name: &str) -> Option<PathBuf> {
             "categories",
             "mimetypes",
         ] {
-            for extension in ["png", "svg", "xpm"] {
+            // XPM is not decoded, so offering it here would hide a readable
+            // PNG or SVG at the next size behind a file that can never draw.
+            for extension in ["png", "svg"] {
                 candidates.push(
                     theme
                         .join(size)
@@ -561,6 +567,62 @@ mod tests {
         let _ = find("utilities-terminal");
         let _ = find("no-such-icon-anywhere");
         let _ = find("/no/such/path.png");
+    }
+
+    #[test]
+    fn a_decoded_icon_asks_for_the_frame_that_shows_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let directory = std::env::temp_dir().join(format!(
+            "process-control-icon-repaint-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("the directory is made");
+        let path = directory.join("thing.png");
+        {
+            let mut bytes = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut writer = encoder.write_header().expect("the header is written");
+                writer
+                    .write_image_data(&[255, 255, 255, 255])
+                    .expect("the pixel is written");
+            }
+            std::fs::write(&path, bytes).expect("the png is written");
+        }
+        let ctx = egui::Context::default();
+        let arrived = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&arrived);
+        ctx.set_request_repaint_callback(move |_| flag.store(true, Ordering::SeqCst));
+        let mut icons = Icons::default();
+        let _ = icons.texture(&ctx, &path.to_string_lossy());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !arrived.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::remove_dir_all(&directory).expect("the temporary directory is removed");
+        assert!(
+            arrived.load(Ordering::SeqCst),
+            "the worker asks the window to redraw when the icon arrives"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_xpm_does_not_hide_a_png_at_another_size() {
+        let directory =
+            std::env::temp_dir().join(format!("process-control-icon-theme-{}", std::process::id()));
+        let small = directory.join("32x32/apps");
+        let larger = directory.join("48x48/apps");
+        std::fs::create_dir_all(&small).expect("the small directory is made");
+        std::fs::create_dir_all(&larger).expect("the larger directory is made");
+        std::fs::write(small.join("thing.xpm"), "not decoded").expect("the xpm is written");
+        std::fs::write(larger.join("thing.png"), "not decoded either").expect("the png is written");
+        let found = search(&directory, "thing").expect("the png is found");
+        std::fs::remove_dir_all(&directory).expect("the temporary directory is removed");
+        assert_eq!(found, larger.join("thing.png"));
     }
 
     #[test]

@@ -11,7 +11,9 @@ pub mod process;
 pub mod system;
 pub mod windows;
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::sample::{ProcessDetails, Sample, Signal};
@@ -40,6 +42,7 @@ impl Reader {
     /// Reads the system once.
     pub fn read(&mut self) -> Sample {
         let now = Instant::now();
+        let first = self.started.is_none();
         let elapsed = self
             .started
             .map(|started| now.duration_since(started))
@@ -48,17 +51,28 @@ impl Reader {
 
         let mut sample = Sample::default();
         let (cpu, cores) = system::cpu_times();
-        sample.cpu = cpu.percent_since(&self.counters.cpu);
+        // The first read has no earlier counters to measure against. Its
+        // counters are cumulative since boot, and dividing them by a made-up
+        // interval would report the machine's whole history as one instant.
+        sample.cpu = if first {
+            0.0
+        } else {
+            cpu.percent_since(&self.counters.cpu)
+        };
         sample.cores = cores
             .iter()
             .enumerate()
             .map(|(index, times)| {
-                times.percent_since(
-                    self.counters
-                        .cores
-                        .get(index)
-                        .unwrap_or(&Default::default()),
-                )
+                if first {
+                    0.0
+                } else {
+                    times.percent_since(
+                        self.counters
+                            .cores
+                            .get(index)
+                            .unwrap_or(&Default::default()),
+                    )
+                }
             })
             .collect();
         sample.cpu_count = cores.len();
@@ -74,14 +88,30 @@ impl Reader {
         sample.load = system::load();
 
         let (disk_read, disk_write) = system::disk_io(&system::whole_disks());
-        sample.disk_read = disk_read.saturating_sub(self.counters.disk_read) as f64 / seconds;
-        sample.disk_write = disk_write.saturating_sub(self.counters.disk_write) as f64 / seconds;
+        sample.disk_read = if first {
+            0.0
+        } else {
+            disk_read.saturating_sub(self.counters.disk_read) as f64 / seconds
+        };
+        sample.disk_write = if first {
+            0.0
+        } else {
+            disk_write.saturating_sub(self.counters.disk_write) as f64 / seconds
+        };
         self.counters.disk_read = disk_read;
         self.counters.disk_write = disk_write;
 
         let (net_read, net_write) = system::network_io();
-        sample.net_read = system::increase(&net_read, &self.counters.net_read) as f64 / seconds;
-        sample.net_write = system::increase(&net_write, &self.counters.net_write) as f64 / seconds;
+        sample.net_read = if first {
+            0.0
+        } else {
+            system::increase(&net_read, &self.counters.net_read) as f64 / seconds
+        };
+        sample.net_write = if first {
+            0.0
+        } else {
+            system::increase(&net_write, &self.counters.net_write) as f64 / seconds
+        };
         self.counters.net_read = net_read;
         self.counters.net_write = net_write;
 
@@ -96,7 +126,7 @@ impl Reader {
             .iter()
             .filter(|process| process.state == 'R')
             .count();
-        sample.elapsed = seconds as f32;
+        sample.elapsed = if first { 0.0 } else { seconds as f32 };
         sample.error = walk.error.take();
         sample.processes = walk.processes.clone();
         sample.windows = windows::windows();
@@ -230,19 +260,27 @@ pub fn keep_timers_fine() {
 }
 
 /// The name of the user with this id, or the id as text when there is none.
+///
+/// The user table is read once: the user column asks for it for every row it
+/// draws, and reopening `/etc/passwd` per row per frame would cost more than
+/// the drawing around it.
 pub fn user_name(uid: u32) -> String {
-    let Ok(text) = std::fs::read_to_string("/etc/passwd") else {
-        return uid.to_string();
-    };
-    text.lines()
-        .filter_map(|line| {
-            let mut fields = line.split(':');
-            let name = fields.next()?;
-            let id: u32 = fields.next()?.parse().ok()?;
-            Some((id, name.to_string()))
-        })
-        .find(|(id, _)| *id == uid)
-        .map_or_else(|| uid.to_string(), |(_, name)| name)
+    static USERS: OnceLock<HashMap<u32, String>> = OnceLock::new();
+    let users = USERS.get_or_init(|| {
+        std::fs::read_to_string("/etc/passwd")
+            .map(|text| {
+                text.lines()
+                    .filter_map(|line| {
+                        let mut fields = line.split(':');
+                        let name = fields.next()?;
+                        let id: u32 = fields.next()?.parse().ok()?;
+                        Some((id, name.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    users.get(&uid).cloned().unwrap_or_else(|| uid.to_string())
 }
 
 /// A signed number from a `/proc/<pid>/status` line, such as the nice value.
@@ -337,6 +375,22 @@ mod tests {
         let name = user_name(0);
         assert!(!name.is_empty());
         assert_eq!(user_name(u32::MAX), u32::MAX.to_string());
+    }
+
+    #[test]
+    fn the_first_read_reports_no_rates() {
+        let mut reader = Reader::new();
+        let first = reader.read();
+        assert_eq!(first.cpu, 0.0, "there is no earlier counter to measure");
+        assert_eq!(first.disk_read, 0.0, "boot's disk counters are not a rate");
+        assert_eq!(first.disk_write, 0.0, "boot's disk counters are not a rate");
+        assert_eq!(first.net_read, 0.0, "boot's net counters are not a rate");
+        assert_eq!(first.net_write, 0.0, "boot's net counters are not a rate");
+        assert_eq!(first.elapsed, 0.0, "the first read covers no interval");
+        assert!(
+            first.cores.iter().all(|core| *core == 0.0),
+            "no core has an interval to measure"
+        );
     }
 
     #[test]
