@@ -1,4 +1,10 @@
 
+## [0.1.12](https://github.com/fiftydinar/process-control/compare/v0.1.11...v0.1.12) - 2026-11-10
+
+### Bug Fixes
+
+- *(apps)* Recognize Flatpak processes by sandbox id - ([28509f2](https://github.com/fiftydinar/process-control/commit/28509f23c5151f4f93bb079064e8ba87a8c1c7ec))
+
 ## [0.1.11](https://github.com/fiftydinar/process-control/compare/v0.1.10...v0.1.11) - 2026-11-10
 
 ### Features
