@@ -1,4 +1,10 @@
 
+## [0.1.11](https://github.com/fiftydinar/process-control/compare/v0.1.10...v0.1.11) - 2026-11-10
+
+### Features
+
+- *(desktop)* Read Flatpak's exported desktop entries - ([7a08b33](https://github.com/fiftydinar/process-control/commit/7a08b33cd6778ff74fb56ab779cb8dabcdf40d80))
+
 ## [0.1.10](https://github.com/fiftydinar/process-control/compare/v0.1.9...v0.1.10) - 2026-11-10
 
 ### Features
