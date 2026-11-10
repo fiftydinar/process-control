@@ -228,6 +228,8 @@ pub struct Applications {
     /// The windows, indexed by the process that owns them, which the details
     /// panel reads a window class from.
     windows: HashMap<i32, Window>,
+    /// The name and icon of each Flatpak sandbox's application, by sandbox id.
+    sandboxes: HashMap<String, (String, Option<String>)>,
 }
 
 /// Whether an ancestor of `process` is the same application, by executable
@@ -272,7 +274,8 @@ fn has_application_ancestor(
 /// the `flatpak` command its entry's `Exec` line names, so the sandbox id is
 /// the name that finds it.
 fn entry_of<'a>(process: &ProcessInfo, entries: &'a dyn EntryLookup) -> Option<&'a Entry> {
-    if let Some(id) = process.flatpak_id.as_deref()
+    if process.flatpak_app
+        && let Some(id) = process.flatpak_id.as_deref()
         && let Some(entry) = entries.matching(&[id.to_string()], None)
     {
         return Some(entry);
@@ -295,6 +298,7 @@ impl Applications {
             owners: HashMap::new(),
             membership: HashMap::new(),
             windows: HashMap::new(),
+            sandboxes: HashMap::new(),
         };
         let by_pid: HashMap<i32, usize> = sample.index();
         // A Wayland session publishes only its Xwayland windows, so a
@@ -362,6 +366,21 @@ impl Applications {
                 .entry(window.pid)
                 .or_insert_with(|| window.clone());
         }
+        // Every process of a Flatpak sandbox carries the sandbox id, so the
+        // helpers that are not the application can be attached to the owner
+        // the application got, even when they are its ancestors rather than
+        // its children.
+        for process in &sample.processes {
+            if process.flatpak_app
+                && let Some(id) = process.flatpak_id.as_deref()
+                && let Some(owner) = applications.owners.get(&process.pid).cloned()
+            {
+                applications
+                    .sandboxes
+                    .entry(id.to_string())
+                    .or_insert(owner);
+            }
+        }
         applications
     }
 
@@ -374,6 +393,14 @@ impl Applications {
         let by_pid: HashMap<i32, usize> = sample.index();
         let mut resolved: HashMap<i32, Option<(String, Option<String>)>> = HashMap::new();
         for process in &sample.processes {
+            // A Flatpak sandbox's helpers are not descendants of the app, so
+            // they are attached by the sandbox id rather than by the tree.
+            if let Some(id) = process.flatpak_id.as_deref()
+                && let Some(owner) = self.sandboxes.get(id)
+            {
+                resolved.insert(process.pid, Some(owner.clone()));
+                continue;
+            }
             let mut seen = HashSet::new();
             let mut current = process;
             let found = loop {
@@ -1358,12 +1385,20 @@ mod tests {
         // entry, and a helper inside the same sandbox belongs to it too.
         let mut sample = sample(vec![
             process(1, 0, "init"),
-            process(400, 1, "Telegram"),
-            process(401, 400, "Telegram"),
+            process(300, 1, "bwrap"),
+            process(301, 1, "xdg-dbus-proxy"),
+            process(400, 300, "Telegram"),
+            process(401, 400, "Telegram helper"),
         ]);
-        for process in &mut sample.processes[1..] {
+        for process in &mut sample.processes[1..=2] {
+            process.exe = Some(format!("/usr/bin/{}", process.name));
+            process.flatpak_id = Some("org.telegram.desktop".to_string());
+            process.flatpak_app = false;
+        }
+        for process in &mut sample.processes[3..] {
             process.exe = Some("/app/bin/Telegram".to_string());
             process.flatpak_id = Some("org.telegram.desktop".to_string());
+            process.flatpak_app = true;
         }
         assert!(sample.windows.is_empty(), "a Wayland sample has no windows");
 
@@ -1400,7 +1435,17 @@ mod tests {
             .find(|row| row.name == "Telegram")
             .expect("the sandbox id names the desktop entry");
         assert_eq!(telegram.icon.as_deref(), Some("org.telegram.desktop"));
-        assert_eq!(telegram.totals.count, 2, "its helper is counted with it");
+        assert_eq!(
+            telegram.totals.count, 4,
+            "the app, its helper and the two sandbox helpers are counted with it"
+        );
+        assert!(
+            telegram.has_children,
+            "the sandbox helpers give the row an expand arrow"
+        );
+        let mut pids = telegram.pids.clone();
+        pids.sort_unstable();
+        assert_eq!(pids, [300, 301, 400, 401]);
     }
 
     #[test]

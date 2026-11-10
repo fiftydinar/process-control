@@ -322,6 +322,7 @@ fn sample() -> crate::sample::Sample {
                 Some(format!("/usr/bin/{name}"))
             },
             flatpak_id: None,
+            flatpak_app: false,
             uid: 1000,
             state,
             threads,

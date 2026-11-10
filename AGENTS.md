@@ -353,8 +353,10 @@ Flatpak process runs the app's own binary rather than the `flatpak` command its
 entry names, so the sandbox id from `/.flatpak-info` and `FLATPAK_ID` is what
 finds the entry in the executable fallback; `bwrap` and `xdg-dbus-proxy` share
 the info file but not `FLATPAK_ID`, so they are not applications of their own.
-All of this reads files Flatpak installs; it consults no Flatpak, Snap or
-systemd API or database, which do not exist on a great many systems.
+Their sandbox id ties them to the application's row instead, which gives the
+row its helpers and lets a stop take the whole sandbox down. All of this reads
+files Flatpak installs; it consults no Flatpak, Snap or systemd API or
+database, which do not exist on a great many systems.
 
 `src/desktop.rs` is at the crate root rather than behind the platform module
 because it is plain XDG file parsing: it reads the same `.desktop` files for any

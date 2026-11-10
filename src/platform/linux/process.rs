@@ -104,7 +104,10 @@ fn read_process(
     let exe = std::fs::read_link(directory.join("exe"))
         .ok()
         .and_then(|path| path.into_os_string().into_string().ok());
-    let flatpak_id = flatpak_id(directory);
+    let (flatpak_id, flatpak_app) = match flatpak(directory) {
+        Some((id, app)) => (Some(id), app),
+        None => (None, false),
+    };
     let (gpu_time, gpu_memory) = super::gpu::process(directory);
     let (net_received, net_sent) = super::net::socket_bytes_of(directory, sockets);
 
@@ -114,6 +117,7 @@ fn read_process(
         name: stat.name,
         exe,
         flatpak_id,
+        flatpak_app,
         uid: parse_uid(&status),
         state: stat.state,
         threads: stat.threads,
@@ -136,23 +140,40 @@ fn read_process(
     Some(Read { info, counters })
 }
 
-/// The application id of the Flatpak sandbox a process runs in, if any.
+/// The Flatpak application id of the sandbox a process runs in, and whether
+/// the process is the application itself.
 ///
 /// Only a sandboxed process sees `/.flatpak-info`, so that file is a cheap
-/// test before reading the environment. `FLATPAK_ID` is what tells the app
-/// apart from the `bwrap` and `xdg-dbus-proxy` processes that build its
-/// sandbox: those share the file but not the app's environment.
-fn flatpak_id(directory: &Path) -> Option<String> {
-    if !directory.join("root/.flatpak-info").is_file() {
-        return None;
+/// test before reading the environment. Its `name` is the application id,
+/// which the `bwrap` and `xdg-dbus-proxy` helpers share with the app.
+/// `FLATPAK_ID` is in the app's own environment but not in theirs, which is
+/// what tells the two apart.
+fn flatpak(directory: &Path) -> Option<(String, bool)> {
+    let info = std::fs::read_to_string(directory.join("root/.flatpak-info")).ok()?;
+    let mut application = false;
+    let mut id = None;
+    for line in info.lines() {
+        let line = line.trim();
+        if let Some(group) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            application = group == "Application";
+            continue;
+        }
+        if application && let Some(name) = line.strip_prefix("name=") {
+            let name = name.trim();
+            if !name.is_empty() {
+                id = Some(name.to_string());
+                break;
+            }
+        }
     }
-    let environment = std::fs::read(directory.join("environ")).ok()?;
-    environment
-        .split(|byte| *byte == 0)
-        .find_map(|variable| variable.strip_prefix(b"FLATPAK_ID="))
-        .and_then(|id| std::str::from_utf8(id).ok())
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
+    let id = id?;
+    let environment = std::fs::read(directory.join("environ")).ok();
+    let app = environment.is_some_and(|environment| {
+        environment
+            .split(|byte| *byte == 0)
+            .any(|variable| variable.strip_prefix(b"FLATPAK_ID=") == Some(id.as_bytes()))
+    });
+    Some((id, app))
 }
 
 /// How many clock ticks the kernel reports per second.
@@ -378,10 +399,10 @@ mod tests {
             b"PATH=/app/bin\0FLATPAK_ID=org.example.App\0",
         )
         .expect("the sandbox environment is written");
-        let id = flatpak_id(&directory);
+        let sandbox = flatpak(&directory);
         std::fs::remove_dir_all(&directory).expect("the temporary directory is removed");
-        assert_eq!(id.as_deref(), Some("org.example.App"));
-        assert!(flatpak_id(Path::new("/no/such/process")).is_none());
+        assert_eq!(sandbox, Some(("org.example.App".to_string(), true)));
+        assert!(flatpak(Path::new("/no/such/process")).is_none());
     }
 
     #[test]
