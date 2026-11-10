@@ -233,6 +233,13 @@ fn roots() -> Vec<PathBuf> {
     if let Some(data) = dirs::data_dir() {
         bases.push(data.join("icons"));
     }
+    // Flatpak exports the icons of its user and system installs beside the
+    // desktop entries, outside the host's `XDG_DATA_DIRS`.
+    for base in flatpak_icon_bases() {
+        if !bases.contains(&base) {
+            bases.push(base);
+        }
+    }
     let data_dirs = std::env::var_os("XDG_DATA_DIRS")
         .filter(|value| !value.is_empty())
         .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
@@ -270,6 +277,24 @@ fn roots() -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// The icon theme directories Flatpak exports its installs' icons to.
+///
+/// The user's install comes first, as it does for the desktop entries.
+fn flatpak_icon_bases() -> Vec<PathBuf> {
+    let mut bases = Vec::new();
+    let user = std::env::var_os("FLATPAK_USER_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::data_dir().map(|data| data.join("flatpak")));
+    if let Some(user) = user {
+        bases.push(user.join("exports/share/icons"));
+    }
+    let system = std::env::var_os("FLATPAK_SYSTEM_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/flatpak"));
+    bases.push(system.join("exports/share/icons"));
+    bases
 }
 
 /// The icon theme a desktop session uses.
@@ -567,6 +592,20 @@ mod tests {
         let _ = find("utilities-terminal");
         let _ = find("no-such-icon-anywhere");
         let _ = find("/no/such/path.png");
+    }
+
+    #[test]
+    fn the_flatpak_icon_directories_are_searched() {
+        // A Flatpak entry names its icon by app id, and Flatpak exports the
+        // matching files under its own share/icons rather than the host's.
+        let roots = roots();
+        for base in flatpak_icon_bases() {
+            assert!(
+                roots.contains(&base.join("hicolor")),
+                "{} is searched",
+                base.display()
+            );
+        }
     }
 
     #[test]

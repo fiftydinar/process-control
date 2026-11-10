@@ -346,15 +346,18 @@ executable against the desktop entries. That fallback is what gives a Wayland
 row its name and icon; do not remove it as dead code on a machine with X. `src/desktop.rs`
 indexes the desktop entries and matches `StartupWMClass` against
 both strings of `WM_CLASS`, so an application is recognised whatever packaged
-it. Nothing here consults Flatpak, Snap or systemd, and it must stay that way:
-those do not exist on a great many systems.
+it. The index also reads the desktop files Flatpak exports under its user and
+system installations, which are not part of the host's `XDG_DATA_DIRS`; it
+reads only those files. It consults no Flatpak, Snap or systemd API or
+database, which do not exist on a great many systems.
 
 `src/desktop.rs` is at the crate root rather than behind the platform module
 because it is plain XDG file parsing: it reads the same `.desktop` files for any
 app, and nothing in it is a Linux syscall.
 
 `src/icons.rs` finds and decodes the icons the entries name, off the drawing
-thread. Adding a dependency that reads a new image format belongs there.
+thread, including the themes Flatpak exports for its apps. Adding a dependency
+that reads a new image format belongs there.
 
 ### One OS only
 

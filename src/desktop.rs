@@ -55,9 +55,14 @@ impl Index {
     /// not change while the app runs, and reading a few hundred files is the
     /// one cost in the sampler that is not paid per sample.
     pub fn load() -> Self {
+        Self::load_from(&directories())
+    }
+
+    /// Reads the entries in the given directories, in order.
+    fn load_from(directories: &[PathBuf]) -> Self {
         let mut index = Self::default();
-        for directory in directories() {
-            index.read_dir(&directory);
+        for directory in directories {
+            index.read_dir(directory);
         }
         index
     }
@@ -341,7 +346,13 @@ pub fn parse(text: &str, path: &Path) -> Option<Entry> {
 fn directories() -> Vec<PathBuf> {
     let mut directories = Vec::new();
     if let Some(data) = dirs::data_dir() {
-        directories.push(data.join("applications"));
+        push_unique(&mut directories, data.join("applications"));
+    }
+    // Flatpak exports the entries of its user and system installs here, and
+    // those directories are not part of the host's `XDG_DATA_DIRS` unless
+    // flatpak itself set it up for a sandboxed program.
+    for directory in flatpak_directories() {
+        push_unique(&mut directories, directory);
     }
     let data_dirs = std::env::var_os("XDG_DATA_DIRS")
         .filter(|value| !value.is_empty())
@@ -353,9 +364,36 @@ fn directories() -> Vec<PathBuf> {
                 .collect()
         });
     for directory in data_dirs {
-        directories.push(directory.join("applications"));
+        push_unique(&mut directories, directory.join("applications"));
     }
     directories
+}
+
+/// The directories Flatpak exports its desktop entries to.
+///
+/// The user's install comes first, so it names an application that a system
+/// install also carries. `FLATPAK_USER_DIR` and `FLATPAK_SYSTEM_DIR` move the
+/// two installations from their defaults, as a distribution may.
+fn flatpak_directories() -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let user = std::env::var_os("FLATPAK_USER_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::data_dir().map(|data| data.join("flatpak")));
+    if let Some(user) = user {
+        directories.push(user.join("exports/share/applications"));
+    }
+    let system = std::env::var_os("FLATPAK_SYSTEM_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/flatpak"));
+    directories.push(system.join("exports/share/applications"));
+    directories
+}
+
+/// Adds `directory` unless it is already in the list.
+fn push_unique(directories: &mut Vec<PathBuf>, directory: PathBuf) {
+    if !directories.contains(&directory) {
+        directories.push(directory);
+    }
 }
 
 #[cfg(test)]
@@ -413,6 +451,56 @@ StartupWMClass=Firefox
         assert_eq!(index.len(), 1);
         assert!(index.by_class_name("kde4-foo").is_some());
         assert!(index.by_class_name("foo").is_some());
+    }
+
+    #[test]
+    fn the_flatpak_export_directories_are_read() {
+        // Flatpak's exports are not in the host's XDG_DATA_DIRS, so the
+        // index has to add them itself.
+        let directories = directories();
+        let user = std::env::var_os("FLATPAK_USER_DIR")
+            .map(PathBuf::from)
+            .or_else(|| dirs::data_dir().map(|data| data.join("flatpak")))
+            .map(|directory| directory.join("exports/share/applications"));
+        if let Some(user) = user {
+            assert!(directories.contains(&user), "{directories:?}");
+        }
+        let system = std::env::var_os("FLATPAK_SYSTEM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/var/lib/flatpak"));
+        assert!(
+            directories.contains(&system.join("exports/share/applications")),
+            "{directories:?}"
+        );
+    }
+
+    #[test]
+    fn a_flatpak_export_is_read() {
+        // Flatpak installs a symlink in exports/share/applications whose name,
+        // `org.example.App.desktop`, is also the window class the app sets.
+        let root =
+            std::env::temp_dir().join(format!("process-control-flatpak-{}", std::process::id()));
+        let exports = root.join("exports/share/applications");
+        let installed = root.join("app/org.example.App/current/active/export/share/applications");
+        std::fs::create_dir_all(&installed).expect("the installed directory is made");
+        std::fs::create_dir_all(&exports).expect("the export directory is made");
+        let file = installed.join("org.example.App.desktop");
+        std::fs::write(
+            &file,
+            "[Desktop Entry]\nType=Application\nName=Example App\nIcon=org.example.App\nExec=/usr/bin/flatpak run org.example.App\n",
+        )
+        .expect("the entry is written");
+        std::os::unix::fs::symlink(&file, exports.join("org.example.App.desktop"))
+            .expect("the export symlink is made");
+
+        let index = Index::load_from(&[exports]);
+        std::fs::remove_dir_all(&root).expect("the temporary directory is removed");
+
+        let entry = index
+            .by_class_name("org.example.App")
+            .expect("the desktop file name is the window class");
+        assert_eq!(entry.name, "Example App");
+        assert_eq!(entry.icon, "org.example.App");
     }
 
     #[test]
