@@ -8,7 +8,7 @@ use eframe::egui::{
 
 use crate::app::App;
 use crate::apps::{SortKey, ViewMode};
-use crate::config::REFRESH_CHOICES;
+use crate::config::{REFRESH_CHOICES, RowSize};
 use crate::format;
 use crate::sample::Signal;
 use crate::theme::{self, Theme};
@@ -42,12 +42,6 @@ fn palette(ui: &egui::Ui) -> theme::Palette {
     }
 }
 
-/// Height of one row of the process table, in points.
-const ROW_HEIGHT: f32 = 22.0;
-
-/// Height of the column titles above the table, in points.
-const HEADER_HEIGHT: f32 = 22.0;
-
 /// Height of the strip of graphs across the top, in points.
 const GRAPH_HEIGHT: f32 = 96.0;
 
@@ -57,17 +51,67 @@ const TOOLBAR_HEIGHT: f32 = 34.0;
 /// Width of the details panel, in points.
 const DETAILS_WIDTH: f32 = 380.0;
 
-/// Width of the row's application icon column, in points.
-const ICON_COLUMN: f32 = 22.0;
+/// The measurements one row size uses, in points.
+#[derive(Clone, Copy)]
+struct RowMetrics {
+    /// The height of one row.
+    height: f32,
+    /// The height of the column titles above the table.
+    header: f32,
+    /// What the text and the fixed columns grow by.
+    scale: f32,
+    /// The side of an application's icon.
+    icon: f32,
+    /// The width of the column that holds the icon.
+    icon_column: f32,
+    /// The margin inside a row and around a cell's text.
+    margin: f32,
+    /// The side of the arrow that folds a row away.
+    arrow: f32,
+    /// How far a row steps in for each level of the tree.
+    indent: f32,
+    /// Half the height of the bar drawn behind a number.
+    bar_half: f32,
+}
 
-/// How far a row steps in for each level of the tree, in points.
-const INDENT: f32 = 14.0;
-
-/// The side of the arrow that folds a row away, in points.
-const ARROW: f32 = 11.0;
-
-/// Margin inside a table row, in points.
-const ROW_MARGIN: f32 = 6.0;
+/// The measurements for a row size.
+fn row_metrics(size: RowSize) -> RowMetrics {
+    match size {
+        RowSize::Small => RowMetrics {
+            height: 22.0,
+            header: 22.0,
+            scale: 1.0,
+            icon: 16.0,
+            icon_column: 22.0,
+            margin: 6.0,
+            arrow: 11.0,
+            indent: 14.0,
+            bar_half: 5.0,
+        },
+        RowSize::Larger => RowMetrics {
+            height: 28.0,
+            header: 26.0,
+            scale: 1.1,
+            icon: 20.0,
+            icon_column: 28.0,
+            margin: 8.0,
+            arrow: 12.0,
+            indent: 16.0,
+            bar_half: 6.0,
+        },
+        RowSize::Large => RowMetrics {
+            height: 34.0,
+            header: 30.0,
+            scale: 1.2,
+            icon: 24.0,
+            icon_column: 34.0,
+            margin: 10.0,
+            arrow: 13.0,
+            indent: 18.0,
+            bar_half: 7.0,
+        },
+    }
+}
 
 /// How much of a bar's width the value fills, drawn as a faint track behind
 /// the number.
@@ -135,20 +179,21 @@ impl Column {
 
     /// The width the column takes, or `None` for the name, which takes what
     /// is left.
-    fn width(self) -> Option<f32> {
-        match self {
-            Column::Icon => Some(ICON_COLUMN),
-            Column::Name => None,
-            Column::Pid => Some(58.0),
-            Column::User => Some(78.0),
-            Column::Cpu => Some(74.0),
-            Column::Memory => Some(82.0),
-            Column::Disk => Some(74.0),
-            Column::Network => Some(78.0),
-            Column::Gpu => Some(60.0),
-            Column::Threads => Some(56.0),
-            Column::State => Some(52.0),
-        }
+    fn width(self, metrics: RowMetrics) -> Option<f32> {
+        let width = match self {
+            Column::Icon => return Some(metrics.icon_column),
+            Column::Name => return None,
+            Column::Pid => 58.0,
+            Column::User => 78.0,
+            Column::Cpu => 74.0,
+            Column::Memory => 82.0,
+            Column::Disk => 74.0,
+            Column::Network => 78.0,
+            Column::Gpu => 60.0,
+            Column::Threads => 56.0,
+            Column::State => 52.0,
+        };
+        Some(width * metrics.scale)
     }
 
     /// The sort key the column title asks for, when it has one.
@@ -215,16 +260,19 @@ fn columns_for(width: f32) -> Vec<Column> {
 
 /// A column's rectangle, given the table's width and the space its numbers
 /// were measured at.
-fn layout(width: f32, columns: &[Column]) -> Vec<(Column, Rect)> {
-    let fixed: f32 = columns.iter().filter_map(|column| column.width()).sum();
+fn layout(width: f32, columns: &[Column], metrics: RowMetrics) -> Vec<(Column, Rect)> {
+    let fixed: f32 = columns
+        .iter()
+        .filter_map(|column| column.width(metrics))
+        .sum();
     let name = (width - fixed).max(120.0);
     let mut x = 0.0;
     let mut placed = Vec::with_capacity(columns.len());
     for column in columns {
-        let column_width = column.width().unwrap_or(name);
+        let column_width = column.width(metrics).unwrap_or(name);
         placed.push((
             *column,
-            Rect::from_min_size(egui::pos2(x, 0.0), vec2(column_width, ROW_HEIGHT)),
+            Rect::from_min_size(egui::pos2(x, 0.0), vec2(column_width, metrics.height)),
         ));
         x += column_width;
     }
@@ -303,6 +351,19 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                     app.show_icons = icons;
                     app.save();
                 }
+                ui.menu_button("Row Size", |ui| {
+                    for size in RowSize::ALL {
+                        if ui
+                            .selectable_label(app.row_size == size, size.name())
+                            .clicked()
+                        {
+                            app.row_size = size;
+                            app.save();
+                            ui.ctx().request_repaint();
+                            ui.close();
+                        }
+                    }
+                });
                 ui.separator();
                 ui.menu_button("Theme", |ui| {
                     for theme in Theme::ALL {
@@ -796,11 +857,12 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
     // all of it would have its last column under the bar.
     let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
     let width = (ui.available_width() - bar).max(200.0);
-    let places = layout(width, columns);
+    let metrics = row_metrics(app.row_size);
+    let places = layout(width, columns, metrics);
     // The titles stay put while the rows scroll, so they are drawn first and
     // the rows are clipped below them.
-    let header = Rect::from_min_size(ui.cursor().min, vec2(width, HEADER_HEIGHT));
-    ui.add_space(HEADER_HEIGHT);
+    let header = Rect::from_min_size(ui.cursor().min, vec2(width, metrics.header));
+    ui.add_space(metrics.header);
     let clip = ui.clip_rect();
     ui.set_clip_rect(Rect::from_min_max(
         egui::pos2(clip.min.x, header.bottom()),
@@ -823,7 +885,7 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
             },
         );
         ui.set_clip_rect(clip);
-        column_titles(app, ui, header, &places);
+        column_titles(app, ui, header, &places, metrics);
         return;
     }
 
@@ -833,7 +895,7 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
+        .show_rows(ui, metrics.height, visible.len(), |ui, range| {
             for position in range {
                 let row_index = visible[position];
                 let heading = app
@@ -847,11 +909,11 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
                 } else {
                     Sense::click()
                 };
-                let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), sense);
+                let (rect, response) = ui.allocate_exact_size(vec2(width, metrics.height), sense);
                 if rect.bottom() < ui.clip_rect().top() || rect.top() > ui.clip_rect().bottom() {
                     continue;
                 }
-                row(app, ui, row_index, rect, &places, &response);
+                row(app, ui, row_index, rect, &places, &response, metrics);
                 // The row is painted rather than built from widgets, so its
                 // text is announced here: a screen reader would otherwise see
                 // a table of nothing.
@@ -875,7 +937,7 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
             }
         });
     ui.set_clip_rect(clip);
-    column_titles(app, ui, header, &places);
+    column_titles(app, ui, header, &places, metrics);
     if let Some((row_index, button)) = clicked {
         match button {
             egui::PointerButton::Primary => {
@@ -903,7 +965,13 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
 }
 
 /// Draws the column titles, which a click sorts by.
-fn column_titles(app: &mut App, ui: &mut egui::Ui, header: Rect, places: &[(Column, Rect)]) {
+fn column_titles(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    header: Rect,
+    places: &[(Column, Rect)],
+    metrics: RowMetrics,
+) {
     let painter = ui.painter_at(header);
     let palette = palette(ui);
     painter.rect_filled(header, 0.0, ui.visuals().faint_bg_color);
@@ -911,7 +979,7 @@ fn column_titles(app: &mut App, ui: &mut egui::Ui, header: Rect, places: &[(Colu
     for (column, place) in places {
         let rect = Rect::from_min_size(
             egui::pos2(header.left() + place.left(), header.top()),
-            vec2(place.width(), HEADER_HEIGHT),
+            vec2(place.width(), metrics.header),
         );
         let key = column.sort_key();
         let active = key.is_some_and(|key| key == app.sort);
@@ -939,11 +1007,17 @@ fn column_titles(app: &mut App, ui: &mut egui::Ui, header: Rect, places: &[(Colu
             Align2::LEFT_CENTER
         };
         let position = if column.numeric() {
-            egui::pos2(rect.right() - ROW_MARGIN, rect.center().y)
+            egui::pos2(rect.right() - metrics.margin, rect.center().y)
         } else {
-            egui::pos2(rect.left() + ROW_MARGIN, rect.center().y)
+            egui::pos2(rect.left() + metrics.margin, rect.center().y)
         };
-        painter.text(position, anchor, label, FontId::proportional(11.0), color);
+        painter.text(
+            position,
+            anchor,
+            label,
+            FontId::proportional(11.0 * metrics.scale),
+            color,
+        );
         if response.clicked()
             && let Some(key) = key
         {
@@ -965,6 +1039,7 @@ fn row(
     rect: Rect,
     places: &[(Column, Rect)],
     response: &egui::Response,
+    metrics: RowMetrics,
 ) {
     let Some(entry) = app.rows.get(position).cloned() else {
         return;
@@ -978,8 +1053,11 @@ fn row(
     if entry.is_heading() {
         painter.rect_filled(rect, 0.0, ui.visuals().widgets.noninteractive.bg_fill);
         let arrow = Rect::from_center_size(
-            egui::pos2(rect.left() + ROW_MARGIN + ARROW / 2.0, rect.center().y),
-            vec2(ARROW, ARROW),
+            egui::pos2(
+                rect.left() + metrics.margin + metrics.arrow / 2.0,
+                rect.center().y,
+            ),
+            vec2(metrics.arrow, metrics.arrow),
         );
         let points = if entry.folded {
             vec![
@@ -1003,7 +1081,7 @@ fn row(
             egui::pos2(arrow.right() + 6.0, rect.center().y),
             Align2::LEFT_CENTER,
             entry.name.to_uppercase(),
-            FontId::proportional(10.0),
+            FontId::proportional(10.0 * metrics.scale),
             palette.weak_text,
         );
         // The section's own totals, in the columns they belong to.
@@ -1022,10 +1100,10 @@ fn row(
                 _ => continue,
             };
             painter.text(
-                egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                egui::pos2(cell.right() - metrics.margin, cell.center().y),
                 Align2::RIGHT_CENTER,
                 text,
-                FontId::proportional(11.0),
+                FontId::proportional(11.0 * metrics.scale),
                 palette.weak_text,
             );
         }
@@ -1073,10 +1151,8 @@ fn row(
         );
         match column {
             Column::Icon => {
-                let square = Rect::from_center_size(
-                    cell.center(),
-                    vec2(crate::app::ICON_SIZE, crate::app::ICON_SIZE),
-                );
+                let square =
+                    Rect::from_center_size(cell.center(), vec2(metrics.icon, metrics.icon));
                 match &texture {
                     Some(texture) => {
                         painter.image(
@@ -1106,13 +1182,13 @@ fn row(
                 }
             }
             Column::Name => {
-                let indent = entry.depth as f32 * INDENT;
+                let indent = entry.depth as f32 * metrics.indent;
                 let arrow = Rect::from_center_size(
                     egui::pos2(
-                        cell.left() + ROW_MARGIN + indent + ARROW / 2.0,
+                        cell.left() + metrics.margin + indent + metrics.arrow / 2.0,
                         cell.center().y,
                     ),
-                    vec2(ARROW, ARROW),
+                    vec2(metrics.arrow, metrics.arrow),
                 );
                 if entry.has_children {
                     let points = if entry.folded {
@@ -1140,7 +1216,7 @@ fn row(
                         toggle = true;
                     }
                 }
-                let text_left = cell.left() + ROW_MARGIN + indent + ARROW + 4.0;
+                let text_left = cell.left() + metrics.margin + indent + metrics.arrow + 4.0;
                 // An application's own row is the one that names the program;
                 // its processes are drawn a shade quieter so the tree reads as
                 // one program with parts rather than as a list of equals.
@@ -1153,9 +1229,9 @@ fn row(
                 };
                 let galley = ui.painter().layout(
                     entry.name.clone(),
-                    FontId::proportional(12.5),
+                    FontId::proportional(12.5 * metrics.scale),
                     color,
-                    cell.right() - text_left - ROW_MARGIN,
+                    cell.right() - text_left - metrics.margin,
                 );
                 painter.galley(
                     egui::pos2(text_left, cell.center().y - galley.size().y / 2.0),
@@ -1165,20 +1241,20 @@ fn row(
             }
             Column::Pid => {
                 painter.text(
-                    egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.right() - metrics.margin, cell.center().y),
                     Align2::RIGHT_CENTER,
                     entry.pids.first().copied().unwrap_or_default().to_string(),
-                    FontId::monospace(11.0),
+                    FontId::monospace(11.0 * metrics.scale),
                     palette.weak_text,
                 );
             }
             Column::User => {
                 let user = user_name(process.as_ref().map(|process| process.uid).unwrap_or(0));
                 painter.text(
-                    egui::pos2(cell.left() + ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.left() + metrics.margin, cell.center().y),
                     Align2::LEFT_CENTER,
                     user,
-                    FontId::proportional(11.5),
+                    FontId::proportional(11.5 * metrics.scale),
                     palette.weak_text,
                 );
             }
@@ -1190,6 +1266,7 @@ fn row(
                     format::percent(entry.totals.cpu),
                     palette.accent,
                     palette,
+                    metrics,
                 );
             }
             Column::Memory => {
@@ -1201,25 +1278,26 @@ fn row(
                     format::bytes(entry.totals.memory),
                     palette.accent.gamma_multiply(0.85),
                     palette,
+                    metrics,
                 );
             }
             Column::Disk => {
                 let rate = entry.totals.disk_read + entry.totals.disk_write;
                 painter.text(
-                    egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.right() - metrics.margin, cell.center().y),
                     Align2::RIGHT_CENTER,
                     format::rate(rate),
-                    FontId::proportional(11.5),
+                    FontId::proportional(11.5 * metrics.scale),
                     palette.weak_text,
                 );
             }
             Column::Network => {
                 let rate = entry.totals.net_read + entry.totals.net_write;
                 painter.text(
-                    egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.right() - metrics.margin, cell.center().y),
                     Align2::RIGHT_CENTER,
                     format::rate(rate),
-                    FontId::proportional(11.5),
+                    FontId::proportional(11.5 * metrics.scale),
                     palette.weak_text,
                 );
             }
@@ -1230,30 +1308,30 @@ fn row(
                     format::percent(entry.totals.gpu)
                 };
                 painter.text(
-                    egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.right() - metrics.margin, cell.center().y),
                     Align2::RIGHT_CENTER,
                     text,
-                    FontId::proportional(11.5),
+                    FontId::proportional(11.5 * metrics.scale),
                     palette.weak_text,
                 );
             }
             Column::Threads => {
                 let threads = process.as_ref().map(|process| process.threads).unwrap_or(0);
                 painter.text(
-                    egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.right() - metrics.margin, cell.center().y),
                     Align2::RIGHT_CENTER,
                     threads.to_string(),
-                    FontId::monospace(11.0),
+                    FontId::monospace(11.0 * metrics.scale),
                     palette.weak_text,
                 );
             }
             Column::State => {
                 let state = process.as_ref().map(|process| process.state).unwrap_or('-');
                 painter.text(
-                    egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                    egui::pos2(cell.right() - metrics.margin, cell.center().y),
                     Align2::RIGHT_CENTER,
                     state.to_string(),
-                    FontId::monospace(11.0),
+                    FontId::monospace(11.0 * metrics.scale),
                     palette.weak_text,
                 );
             }
@@ -1297,10 +1375,17 @@ fn bar(
     text: String,
     color: Color32,
     palette: theme::Palette,
+    metrics: RowMetrics,
 ) {
     let track = Rect::from_min_max(
-        egui::pos2(cell.left() + ROW_MARGIN, cell.center().y - 5.0),
-        egui::pos2(cell.right() - ROW_MARGIN, cell.center().y + 5.0),
+        egui::pos2(
+            cell.left() + metrics.margin,
+            cell.center().y - metrics.bar_half,
+        ),
+        egui::pos2(
+            cell.right() - metrics.margin,
+            cell.center().y + metrics.bar_half,
+        ),
     );
     let filled = Rect::from_min_max(
         track.min,
@@ -1317,7 +1402,7 @@ fn bar(
         egui::pos2(track.right() - 2.0, track.center().y),
         Align2::RIGHT_CENTER,
         text,
-        FontId::proportional(11.5),
+        FontId::proportional(11.5 * metrics.scale),
         palette.text,
     );
 }
@@ -1652,6 +1737,20 @@ mod tests {
         harness.run();
         for label in ["Terminate", "Force Stop", "Signal", "Details"] {
             harness.get_by_label(label);
+        }
+    }
+
+    #[test]
+    fn every_row_size_draws_the_table() {
+        let mut harness = harness();
+        for size in RowSize::ALL {
+            harness.state_mut().row_size = size;
+            harness.run();
+            let rows: Vec<String> = harness.state().rows.iter().map(row_description).collect();
+            assert!(
+                rows.iter().any(|row| row.starts_with("init: ")),
+                "{size:?}: {rows:?}"
+            );
         }
     }
 

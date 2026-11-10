@@ -72,8 +72,9 @@ you did not expect.
 ## Settings
 
 Everything is in the **View** menu: which view is shown, whether kernel threads
-are listed, whether icons are drawn, the colour theme and how often the table is
-read. Settings are kept between runs in
+are listed, whether icons are drawn, the row size, the colour theme and how
+often the table is read. **Row Size** keeps the compact default or draws
+roomier rows with larger icons and text. Settings are kept between runs in
 `$XDG_CONFIG_HOME/process-control/config.toml`.
 
 **Refresh Every** decides how often the process table is read. Once a second is

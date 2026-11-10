@@ -21,6 +21,40 @@ pub const REFRESH_CHOICES: [(u32, &str); 5] = [
 /// The default refresh interval, in milliseconds.
 pub const DEFAULT_REFRESH: u32 = 1000;
 
+/// How tall the process table's rows are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RowSize {
+    /// The compact rows the app has always drawn.
+    #[default]
+    Small,
+    /// Roomier rows, with a larger icon and text.
+    Larger,
+    /// The roomiest rows, for a touch screen or a distant display.
+    Large,
+}
+
+impl RowSize {
+    /// Every size, small to large.
+    pub const ALL: [RowSize; 3] = [RowSize::Small, RowSize::Larger, RowSize::Large];
+
+    /// The name the View menu shows, which is also what the settings file
+    /// stores.
+    pub fn name(self) -> &'static str {
+        match self {
+            RowSize::Small => "Small",
+            RowSize::Larger => "Larger",
+            RowSize::Large => "Large",
+        }
+    }
+
+    /// The size with this name, as the settings file stores it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|size| size.name().eq_ignore_ascii_case(name))
+    }
+}
+
 /// Settings written to the user's config directory.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -37,6 +71,8 @@ pub struct Config {
     /// Whether processes are grouped into applications by their window
     /// class, rather than listed one by one.
     pub group_apps: Option<bool>,
+    /// Name of the row size, as [`RowSize::name`] gives it.
+    pub row_size: Option<String>,
     /// Name of the sort column, if the list is sorted by one.
     pub sort: Option<String>,
     /// Whether the sort runs the other way round.
@@ -89,6 +125,14 @@ impl Config {
     pub fn refresh_span(&self) -> std::time::Duration {
         std::time::Duration::from_millis(u64::from(self.refresh()))
     }
+
+    /// How tall the table's rows are drawn.
+    pub fn row_size(&self) -> RowSize {
+        self.row_size
+            .as_deref()
+            .and_then(RowSize::from_name)
+            .unwrap_or_default()
+    }
 }
 
 /// `$XDG_CONFIG_HOME/process-control/config.toml`, or the platform's own
@@ -115,6 +159,7 @@ mod tests {
             show_kernel_threads: Some(true),
             show_icons: Some(false),
             group_apps: Some(false),
+            row_size: Some("Large".to_string()),
             sort: Some("CPU".to_string()),
             descending: Some(true),
         };
@@ -128,6 +173,7 @@ mod tests {
         assert_eq!(loaded.show_kernel_threads, Some(true));
         assert_eq!(loaded.show_icons, Some(false));
         assert_eq!(loaded.group_apps, Some(false));
+        assert_eq!(loaded.row_size(), RowSize::Large);
         assert_eq!(loaded.sort.as_deref(), Some("CPU"));
         assert_eq!(loaded.descending, Some(true));
     }
@@ -137,7 +183,22 @@ mod tests {
         let missing = temporary("no-such-config").join("config.toml");
         let config = Config::load_from(&missing);
         assert_eq!(config.refresh(), DEFAULT_REFRESH);
+        assert_eq!(config.row_size(), RowSize::Small);
         assert!(config.theme.is_none());
+    }
+
+    #[test]
+    fn a_row_size_name_round_trips_and_an_unknown_one_is_small() {
+        for size in RowSize::ALL {
+            assert_eq!(RowSize::from_name(size.name()), Some(size));
+        }
+        assert_eq!(RowSize::from_name("large"), Some(RowSize::Large));
+        assert_eq!(RowSize::from_name("huge"), None);
+        let config = Config {
+            row_size: Some("huge".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(config.row_size(), RowSize::Small);
     }
 
     #[test]

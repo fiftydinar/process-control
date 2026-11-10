@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::apps::{self, Applications, Row, SortKey, ViewMode};
-use crate::config::Config;
+use crate::config::{Config, RowSize};
 use crate::desktop::Index;
 use crate::sample::{ProcessDetails, Sample, Signal};
 use crate::sampler::Sampler;
@@ -31,9 +31,6 @@ pub const MIN_WINDOW_SIZE: [f32; 2] = [560.0, 360.0];
 /// refresh fills the graphs faster and shows a shorter past. Two minutes at
 /// the default rate is what the strip across the top covers.
 pub const HISTORY: usize = 120;
-
-/// The side of an application's icon in a row, in points.
-pub const ICON_SIZE: f32 = 16.0;
 
 /// A process the window is showing the details of.
 pub struct Details {
@@ -169,6 +166,8 @@ pub struct App {
     /// Whether the window shows the process table's column of application
     /// icons.
     pub(crate) show_icons: bool,
+    /// How tall the table's rows are drawn.
+    pub(crate) row_size: RowSize,
     /// The message below the tool bar, such as an error.
     pub(crate) status: Option<String>,
 }
@@ -262,6 +261,7 @@ impl App {
             folded: HashSet::new(),
             opened: HashSet::new(),
             show_icons: config.show_icons.unwrap_or(true),
+            row_size: config.row_size(),
             theme,
             config,
             sample: Sample::default(),
@@ -774,6 +774,7 @@ impl App {
         self.config.descending = Some(self.descending);
         self.config.group_apps = Some(self.view == ViewMode::Applications);
         self.config.show_icons = Some(self.show_icons);
+        self.config.row_size = Some(self.row_size.name().to_string());
         if let Err(error) = self.config.save() {
             self.status = Some(error);
         }
