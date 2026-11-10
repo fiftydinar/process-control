@@ -1,4 +1,10 @@
 
+## [0.1.4](https://github.com/fiftydinar/process-control/compare/v0.1.3...v0.1.4) - 2026-11-10
+
+### Bug Fixes
+
+- Repair task manager correctness and refresh - ([c335e9c](https://github.com/fiftydinar/process-control/commit/c335e9c41fda8b209aeb44646fe3d3447e5f3ed7))
+
 ## [0.1.3](https://github.com/fiftydinar/process-control/compare/v0.1.2...v0.1.3) - 2026-11-10
 
 ### Features
