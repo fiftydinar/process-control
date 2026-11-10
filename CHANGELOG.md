@@ -1,4 +1,10 @@
 
+## [0.1.9](https://github.com/fiftydinar/process-control/compare/v0.1.8...v0.1.9) - 2026-11-10
+
+### Bug Fixes
+
+- *(ui)* Follow the line when filling a graph - ([7332331](https://github.com/fiftydinar/process-control/commit/7332331c7ce50ca44b1adf70be5bee49368dd209))
+
 ## [0.1.8](https://github.com/fiftydinar/process-control/compare/v0.1.7...v0.1.8) - 2026-11-10
 
 ### Features
