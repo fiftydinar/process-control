@@ -1,4 +1,10 @@
 
+## [0.1.6](https://github.com/fiftydinar/process-control/compare/v0.1.5...v0.1.6) - 2026-11-10
+
+### Bug Fixes
+
+- *(apps)* Keep windowless programs as applications - ([6aa4a2e](https://github.com/fiftydinar/process-control/commit/6aa4a2e7f67905794c16243018fa8ca21849f36c))
+
 ## [0.1.5](https://github.com/fiftydinar/process-control/compare/v0.1.4...v0.1.5) - 2026-11-10
 
 ### Bug Fixes
