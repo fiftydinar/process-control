@@ -328,10 +328,11 @@ writes no Windows `.ico`. `src/desktop.rs` is the app's own, and
   reads at the configured interval and sends each `Sample` over a channel;
   `src/platform/linux/mod.rs`'s `Reader` is what turns two reads into rates.
   The `Sample` is a value: drawing never waits on the system.
-- `process.rs` reads `/proc/<pid>`, `system.rs` the machine-wide counters,
-  `net.rs` the TCP byte counters (`NETLINK_SOCK_DIAG`, matched to a process by
-  the socket inodes in its `fd` directory), `gpu.rs` the kernel's DRM engine
-  accounting, and `windows.rs` the windows on the X display.
+- `process.rs` reads `/proc/<pid>` and the Flatpak sandbox id a process runs
+  under, `system.rs` the machine-wide counters, `net.rs` the TCP byte counters
+  (`NETLINK_SOCK_DIAG`, matched to a process by the socket inodes in its `fd`
+  directory), `gpu.rs` the kernel's DRM engine accounting, and `windows.rs` the
+  windows on the X display.
 - The per-process network column only counts TCP. A program that streams over
   UDP shows nothing there, because the kernel keeps no byte counter for it.
 
@@ -347,9 +348,13 @@ row its name and icon; do not remove it as dead code on a machine with X. `src/d
 indexes the desktop entries and matches `StartupWMClass` against
 both strings of `WM_CLASS`, so an application is recognised whatever packaged
 it. The index also reads the desktop files Flatpak exports under its user and
-system installations, which are not part of the host's `XDG_DATA_DIRS`; it
-reads only those files. It consults no Flatpak, Snap or systemd API or
-database, which do not exist on a great many systems.
+system installations, which are not part of the host's `XDG_DATA_DIRS`. A
+Flatpak process runs the app's own binary rather than the `flatpak` command its
+entry names, so the sandbox id from `/.flatpak-info` and `FLATPAK_ID` is what
+finds the entry in the executable fallback; `bwrap` and `xdg-dbus-proxy` share
+the info file but not `FLATPAK_ID`, so they are not applications of their own.
+All of this reads files Flatpak installs; it consults no Flatpak, Snap or
+systemd API or database, which do not exist on a great many systems.
 
 `src/desktop.rs` is at the crate root rather than behind the platform module
 because it is plain XDG file parsing: it reads the same `.desktop` files for any

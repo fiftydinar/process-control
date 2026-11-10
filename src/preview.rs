@@ -321,6 +321,7 @@ fn sample() -> crate::sample::Sample {
             } else {
                 Some(format!("/usr/bin/{name}"))
             },
+            flatpak_id: None,
             uid: 1000,
             state,
             threads,

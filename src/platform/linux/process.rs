@@ -104,6 +104,7 @@ fn read_process(
     let exe = std::fs::read_link(directory.join("exe"))
         .ok()
         .and_then(|path| path.into_os_string().into_string().ok());
+    let flatpak_id = flatpak_id(directory);
     let (gpu_time, gpu_memory) = super::gpu::process(directory);
     let (net_received, net_sent) = super::net::socket_bytes_of(directory, sockets);
 
@@ -112,6 +113,7 @@ fn read_process(
         ppid: stat.ppid,
         name: stat.name,
         exe,
+        flatpak_id,
         uid: parse_uid(&status),
         state: stat.state,
         threads: stat.threads,
@@ -132,6 +134,25 @@ fn read_process(
         gpu_memory,
     };
     Some(Read { info, counters })
+}
+
+/// The application id of the Flatpak sandbox a process runs in, if any.
+///
+/// Only a sandboxed process sees `/.flatpak-info`, so that file is a cheap
+/// test before reading the environment. `FLATPAK_ID` is what tells the app
+/// apart from the `bwrap` and `xdg-dbus-proxy` processes that build its
+/// sandbox: those share the file but not the app's environment.
+fn flatpak_id(directory: &Path) -> Option<String> {
+    if !directory.join("root/.flatpak-info").is_file() {
+        return None;
+    }
+    let environment = std::fs::read(directory.join("environ")).ok()?;
+    environment
+        .split(|byte| *byte == 0)
+        .find_map(|variable| variable.strip_prefix(b"FLATPAK_ID="))
+        .and_then(|id| std::str::from_utf8(id).ok())
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
 }
 
 /// How many clock ticks the kernel reports per second.
@@ -337,6 +358,30 @@ mod tests {
         assert!(process.virtual_memory > 0);
         assert!(process.threads >= 1);
         assert!(walk.counters.contains_key(&own));
+    }
+
+    #[test]
+    fn a_flatpak_sandbox_names_its_application() {
+        let directory = std::env::temp_dir().join(format!(
+            "process-control-flatpak-info-{}",
+            std::process::id()
+        ));
+        let root = directory.join("root");
+        std::fs::create_dir_all(&root).expect("the sandbox root is made");
+        std::fs::write(
+            root.join(".flatpak-info"),
+            "[Application]\nname=org.example.App\n",
+        )
+        .expect("the flatpak info is written");
+        std::fs::write(
+            directory.join("environ"),
+            b"PATH=/app/bin\0FLATPAK_ID=org.example.App\0",
+        )
+        .expect("the sandbox environment is written");
+        let id = flatpak_id(&directory);
+        std::fs::remove_dir_all(&directory).expect("the temporary directory is removed");
+        assert_eq!(id.as_deref(), Some("org.example.App"));
+        assert!(flatpak_id(Path::new("/no/such/process")).is_none());
     }
 
     #[test]

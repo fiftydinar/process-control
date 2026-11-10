@@ -258,15 +258,28 @@ fn has_application_ancestor(
         if parent.pid == current.pid {
             return false;
         }
-        if parent
-            .executable_name()
-            .and_then(|executable| entries.by_exec_name(executable))
-            .is_some_and(|entry| entry.name == application)
-        {
+        if entry_of(parent, entries).is_some_and(|entry| entry.name == application) {
             return true;
         }
         current = parent;
     }
+}
+
+/// The desktop entry a process names, through its Flatpak sandbox id or the
+/// executable it runs.
+///
+/// A Flatpak app's process runs the app's own binary inside the sandbox, not
+/// the `flatpak` command its entry's `Exec` line names, so the sandbox id is
+/// the name that finds it.
+fn entry_of<'a>(process: &ProcessInfo, entries: &'a dyn EntryLookup) -> Option<&'a Entry> {
+    if let Some(id) = process.flatpak_id.as_deref()
+        && let Some(entry) = entries.matching(&[id.to_string()], None)
+    {
+        return Some(entry);
+    }
+    process
+        .executable_name()
+        .and_then(|executable| entries.by_exec_name(executable))
 }
 
 impl Applications {
@@ -298,10 +311,7 @@ impl Applications {
                 if applications.owners.contains_key(&process.pid) {
                     continue;
                 }
-                let Some(executable) = process.executable_name() else {
-                    continue;
-                };
-                let Some(entry) = entries.by_exec_name(executable) else {
+                let Some(entry) = entry_of(process, entries) else {
                     continue;
                 };
                 if entry.name.is_empty() {
@@ -1339,6 +1349,58 @@ mod tests {
             rows.iter().any(|row| row.name == "Risk of Rain Returns"),
             "and the game keeps its own row"
         );
+    }
+
+    #[test]
+    fn a_flatpak_app_is_named_by_its_sandbox_id() {
+        // A Flatpak process runs the app's own binary, not the `flatpak`
+        // command its desktop entry names. The sandbox id is its link to the
+        // entry, and a helper inside the same sandbox belongs to it too.
+        let mut sample = sample(vec![
+            process(1, 0, "init"),
+            process(400, 1, "Telegram"),
+            process(401, 400, "Telegram"),
+        ]);
+        for process in &mut sample.processes[1..] {
+            process.exe = Some("/app/bin/Telegram".to_string());
+            process.flatpak_id = Some("org.telegram.desktop".to_string());
+        }
+        assert!(sample.windows.is_empty(), "a Wayland sample has no windows");
+
+        let entry = Entry {
+            name: "Telegram".to_string(),
+            icon: "org.telegram.desktop".to_string(),
+            exec: "/usr/bin/flatpak run org.telegram.desktop".to_string(),
+            ..Entry::default()
+        };
+        struct BySandbox<'a>(&'a Entry);
+        impl EntryLookup for BySandbox<'_> {
+            fn matching(&self, classes: &[String], _executable: Option<&str>) -> Option<&Entry> {
+                classes
+                    .iter()
+                    .any(|class| class == "org.telegram.desktop")
+                    .then_some(self.0)
+            }
+
+            fn by_exec_name(&self, _executable: &str) -> Option<&Entry> {
+                None
+            }
+        }
+
+        let mut applications = Applications::new(&sample, &[], &BySandbox(&entry));
+        applications.resolve(&sample);
+        assert_eq!(
+            applications.owners.keys().copied().collect::<Vec<_>>(),
+            [400],
+            "only the app process owns the application"
+        );
+        let rows = applications_view(&sample, &applications, &[]);
+        let telegram = rows
+            .iter()
+            .find(|row| row.name == "Telegram")
+            .expect("the sandbox id names the desktop entry");
+        assert_eq!(telegram.icon.as_deref(), Some("org.telegram.desktop"));
+        assert_eq!(telegram.totals.count, 2, "its helper is counted with it");
     }
 
     #[test]

@@ -19,6 +19,9 @@ pub struct ProcessInfo {
     pub name: String,
     /// The executable the process runs, when it can be read.
     pub exe: Option<String>,
+    /// The Flatpak application id the process runs under, when it is inside
+    /// a Flatpak sandbox.
+    pub flatpak_id: Option<String>,
     /// The id of the user that owns the process.
     pub uid: u32,
     /// The single letter state: `R`, `S`, `D`, `Z`, `T` and so on.
