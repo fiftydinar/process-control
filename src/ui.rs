@@ -633,7 +633,8 @@ fn card(
         egui::pos2(inner.left(), inner.top() + 48.0),
         egui::pos2(inner.right(), rect.bottom() - 6.0),
     );
-    graph(&painter, plot, history.first, history.ceiling, color);
+    // The dimmer second line goes first, so the bright first line stays on
+    // top where the two overlap.
     if !history.second.is_empty() {
         graph(
             &painter,
@@ -643,6 +644,7 @@ fn card(
             color.gamma_multiply(0.55),
         );
     }
+    graph(&painter, plot, history.first, history.ceiling, color);
     response.on_hover_text(format!("{title}\n{value}\n{detail}"));
 }
 
@@ -694,16 +696,23 @@ fn graph(painter: &egui::Painter, plot: Rect, history: &[f32], ceiling: f32, col
         .map(|(index, value)| point(index, *value))
         .collect();
 
-    let mut fill = points.clone();
-    if let (Some(first), Some(last)) = (points.first(), points.last()) {
-        fill.push(egui::pos2(last.x, plot.bottom()));
-        fill.push(egui::pos2(first.x, plot.bottom()));
+    // The fill follows the line point by point. A convex polygon would take
+    // the hull of a spiky history instead, drawing wide wedges across the
+    // valleys between two peaks.
+    let fill = color.gamma_multiply(0.20);
+    let mut mesh = egui::Mesh::default();
+    let bottom = plot.bottom();
+    for pair in points.windows(2) {
+        let [left, right] = [pair[0], pair[1]];
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(left, fill);
+        mesh.colored_vertex(right, fill);
+        mesh.colored_vertex(egui::pos2(left.x, bottom), fill);
+        mesh.colored_vertex(egui::pos2(right.x, bottom), fill);
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base + 2, base + 1, base + 3);
     }
-    painter.add(egui::Shape::convex_polygon(
-        fill,
-        color.gamma_multiply(0.20),
-        Stroke::NONE,
-    ));
+    painter.add(egui::Shape::mesh(mesh));
     painter.add(egui::Shape::line(points, Stroke::new(1.4, color)));
 }
 
@@ -802,7 +811,8 @@ fn gpu_card(app: &App, ui: &mut egui::Ui, width: f32) {
 fn network_card(app: &App, ui: &mut egui::Ui, width: f32) {
     let sample = &app.sample;
     let palette = palette(ui);
-    let ceiling = app.scales.net.max(1.0);
+    // A little headroom keeps the tallest spike off the card's top edge.
+    let ceiling = (app.scales.net * 1.1).max(1.0);
     card(
         ui,
         width,
@@ -826,7 +836,7 @@ fn network_card(app: &App, ui: &mut egui::Ui, width: f32) {
 fn disk_card(app: &App, ui: &mut egui::Ui, width: f32) {
     let sample = &app.sample;
     let palette = palette(ui);
-    let ceiling = app.scales.disk.max(1.0);
+    let ceiling = (app.scales.disk * 1.1).max(1.0);
     card(
         ui,
         width,
