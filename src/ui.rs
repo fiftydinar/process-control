@@ -549,7 +549,9 @@ fn status_bar(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// The strip of graphs across the top: CPU, memory, GPU, network and storage.
-fn graphs(app: &App, ui: &mut egui::Ui) {
+fn graphs(app: &mut App, ui: &mut egui::Ui) {
+    let mut toggle_network = false;
+    let mut toggle_disk = false;
     egui::Panel::top("graphs")
         .exact_size(GRAPH_HEIGHT + 12.0)
         .show(ui, |ui| {
@@ -562,10 +564,18 @@ fn graphs(app: &App, ui: &mut egui::Ui) {
                 cpu_card(app, ui, card);
                 memory_card(app, ui, card);
                 gpu_card(app, ui, card);
-                network_card(app, ui, card);
-                disk_card(app, ui, card);
+                toggle_network = network_card(app, ui, card);
+                toggle_disk = disk_card(app, ui, card);
             });
         });
+    // A click on one of the two histories toggles only that card, so the
+    // other keeps the layout the user last chose.
+    if toggle_network {
+        app.split_network = !app.split_network;
+    }
+    if toggle_disk {
+        app.split_disk = !app.split_disk;
+    }
 }
 
 /// One graph card's history: one or two lines and the scale they share.
@@ -576,6 +586,10 @@ pub(crate) struct History<'a> {
     pub second: &'a [f32],
     /// The value the top of the plot stands for.
     pub ceiling: f32,
+    /// The names of the two histories, when the card can split them.
+    pub labels: Option<(&'static str, &'static str)>,
+    /// Whether the two histories are drawn side by side.
+    pub split: bool,
 }
 
 /// One graph card: a title, a large reading and a history.
@@ -587,8 +601,21 @@ fn card(
     detail: String,
     history: History<'_>,
     color: Color32,
-) {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, GRAPH_HEIGHT), Sense::hover());
+) -> bool {
+    let labels = history.labels;
+    let split = history.split;
+    let sense = if labels.is_some() {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, GRAPH_HEIGHT), sense);
+    let role = if labels.is_some() {
+        egui::Role::Button
+    } else {
+        egui::Role::Label
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(role, true, title));
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
     painter.rect_filled(rect, 6.0, visuals.faint_bg_color);
@@ -633,19 +660,71 @@ fn card(
         egui::pos2(inner.left(), inner.top() + 48.0),
         egui::pos2(inner.right(), rect.bottom() - 6.0),
     );
-    // The dimmer second line goes first, so the bright first line stays on
-    // top where the two overlap.
-    if !history.second.is_empty() {
-        graph(
-            &painter,
-            plot,
-            history.second,
-            history.ceiling,
-            color.gamma_multiply(0.55),
-        );
+    match labels {
+        Some((first_label, second_label)) if split && !history.second.is_empty() => {
+            // Two plots side by side, each with the label of the history it
+            // draws. The gap keeps their fills from meeting.
+            let gap = 6.0;
+            let half = ((plot.width() - gap) / 2.0).max(1.0);
+            let left = Rect::from_min_size(plot.min, vec2(half, plot.height()));
+            let right = Rect::from_min_size(
+                egui::pos2(plot.center().x + gap / 2.0, plot.top()),
+                vec2(half, plot.height()),
+            );
+            graph(&painter, left, history.first, history.ceiling, color);
+            graph(
+                &painter,
+                right,
+                history.second,
+                history.ceiling,
+                color.gamma_multiply(0.55),
+            );
+            let label = FontId::proportional(9.0);
+            painter.text(
+                left.left_top() + vec2(2.0, 0.0),
+                Align2::LEFT_TOP,
+                first_label,
+                label.clone(),
+                visuals.weak_text_color(),
+            );
+            painter.text(
+                right.left_top() + vec2(2.0, 0.0),
+                Align2::LEFT_TOP,
+                second_label,
+                label,
+                visuals.weak_text_color(),
+            );
+        }
+        _ => {
+            // The dimmer second line goes first, so the bright first line
+            // stays on top where the two overlap.
+            if !history.second.is_empty() {
+                graph(
+                    &painter,
+                    plot,
+                    history.second,
+                    history.ceiling,
+                    color.gamma_multiply(0.55),
+                );
+            }
+            graph(&painter, plot, history.first, history.ceiling, color);
+        }
     }
-    graph(&painter, plot, history.first, history.ceiling, color);
-    response.on_hover_text(format!("{title}\n{value}\n{detail}"));
+    let response = if labels.is_some() {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    };
+    let response = match labels {
+        Some(_) if split => response.on_hover_text(format!(
+            "{title}\n{value}\n{detail}\nClick to combine the graphs"
+        )),
+        Some(_) => response.on_hover_text(format!(
+            "{title}\n{value}\n{detail}\nClick to split the graphs"
+        )),
+        None => response.on_hover_text(format!("{title}\n{value}\n{detail}")),
+    };
+    response.clicked()
 }
 
 /// `text` cut to what fits in `width` at `size`, with an ellipsis when it does
@@ -731,6 +810,8 @@ fn cpu_card(app: &App, ui: &mut egui::Ui, width: f32) {
             first: &app.cpu_history,
             second: &[],
             ceiling: 100.0,
+            labels: None,
+            split: false,
         },
         palette.accent,
     );
@@ -768,6 +849,8 @@ fn memory_card(app: &App, ui: &mut egui::Ui, width: f32) {
             first: &app.memory_history,
             second: &[],
             ceiling: 100.0,
+            labels: None,
+            split: false,
         },
         palette.accent.gamma_multiply(0.85),
     );
@@ -788,6 +871,8 @@ fn gpu_card(app: &App, ui: &mut egui::Ui, width: f32) {
                 first: &app.gpu_history,
                 second: &[],
                 ceiling: 100.0,
+                labels: None,
+                split: false,
             },
             palette.accent.gamma_multiply(0.7),
         ),
@@ -801,14 +886,16 @@ fn gpu_card(app: &App, ui: &mut egui::Ui, width: f32) {
                 first: &[],
                 second: &[],
                 ceiling: 100.0,
+                labels: None,
+                split: false,
             },
             palette.weak_text,
         ),
-    }
+    };
 }
 
 /// The network graph, receiving over sending.
-fn network_card(app: &App, ui: &mut egui::Ui, width: f32) {
+fn network_card(app: &App, ui: &mut egui::Ui, width: f32) -> bool {
     let sample = &app.sample;
     let palette = palette(ui);
     // A little headroom keeps the tallest spike off the card's top edge.
@@ -827,13 +914,15 @@ fn network_card(app: &App, ui: &mut egui::Ui, width: f32) {
             first: &app.net_read_history,
             second: &app.net_write_history,
             ceiling,
+            labels: Some(("Down", "Up")),
+            split: app.split_network,
         },
         palette.accent.gamma_multiply(0.8),
-    );
+    )
 }
 
 /// The storage graph, reading over writing.
-fn disk_card(app: &App, ui: &mut egui::Ui, width: f32) {
+fn disk_card(app: &App, ui: &mut egui::Ui, width: f32) -> bool {
     let sample = &app.sample;
     let palette = palette(ui);
     let ceiling = (app.scales.disk * 1.1).max(1.0);
@@ -851,9 +940,11 @@ fn disk_card(app: &App, ui: &mut egui::Ui, width: f32) {
             first: &app.disk_read_history,
             second: &app.disk_write_history,
             ceiling,
+            labels: Some(("Read", "Write")),
+            split: app.split_disk,
         },
         palette.accent.gamma_multiply(0.65),
-    );
+    )
 }
 
 /// The process table: column titles, then the rows.
@@ -1799,6 +1890,25 @@ mod tests {
                 "{size:?}: {rows:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_history_card_splits_and_combines_with_a_click() {
+        let mut harness = harness();
+        harness.run();
+        assert!(!harness.state().split_network, "it starts combined");
+
+        harness.get_by_label("Network").click();
+        harness.run();
+        assert!(harness.state().split_network, "a click splits the graphs");
+
+        harness.get_by_label("Network").click();
+        harness.run();
+        assert!(
+            !harness.state().split_network,
+            "another click combines them"
+        );
+        assert!(!harness.state().split_disk, "the other card is untouched");
     }
 
     #[test]

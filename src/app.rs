@@ -168,6 +168,10 @@ pub struct App {
     pub(crate) show_icons: bool,
     /// How tall the table's rows are drawn.
     pub(crate) row_size: RowSize,
+    /// Whether the network card shows down and up as two graphs.
+    pub(crate) split_network: bool,
+    /// Whether the storage card shows read and write as two graphs.
+    pub(crate) split_disk: bool,
     /// The message below the tool bar, such as an error.
     pub(crate) status: Option<String>,
 }
@@ -262,6 +266,8 @@ impl App {
             opened: HashSet::new(),
             show_icons: config.show_icons.unwrap_or(true),
             row_size: config.row_size(),
+            split_network: false,
+            split_disk: false,
             theme,
             config,
             sample: Sample::default(),

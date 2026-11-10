@@ -17,6 +17,9 @@ short explanation beside it and two minutes of history behind it.
 - **Storage** counts every whole disk and leaves out the loopback devices and
   the RAM disks, so a file is not counted twice.
 
+Click the **Network** or **Storage** card to show its two histories side by
+side, down and up or read and write, and click it again to combine them.
+
 ## Applications and processes
 
 The tool bar switches between two views of the same sample.
