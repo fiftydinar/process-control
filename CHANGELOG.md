@@ -1,4 +1,10 @@
 
+## [0.1.8](https://github.com/fiftydinar/process-control/compare/v0.1.7...v0.1.8) - 2026-11-10
+
+### Features
+
+- *(ui)* Draw guide lines through the process tree - ([9036059](https://github.com/fiftydinar/process-control/commit/9036059cb6c18479b77772baf1fc87aeba0eab2d))
+
 ## [0.1.7](https://github.com/fiftydinar/process-control/compare/v0.1.6...v0.1.7) - 2026-11-10
 
 ### Features
