@@ -25,9 +25,11 @@ never waits on it.
 
 ## Features
 
-- **Applications, not just processes.** Each program that has a window is
-  shown under its own name and icon, with its helper processes folded away
-  beneath it. The window class and the process that owns the window are read
+- **Applications, not just processes.** The list is split into an
+  **Applications** section, one row per program under its own name and icon
+  with its helper processes counted in its totals, and a **Processes** section
+  for everything that belongs to no program. Each heading carries its section's
+  totals and folds away. The window class and the process that owns the window are read
   from the display server, then matched against the desktop entries, so this
   works for any packaging format: Flatpak, Snap, `.deb`, or a binary in your
   home directory. Nothing here depends on Flatpak, Snap or systemd.

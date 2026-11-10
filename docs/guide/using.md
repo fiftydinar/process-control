@@ -21,10 +21,17 @@ short explanation beside it and two minutes of history behind it.
 
 The tool bar switches between two views of the same sample.
 
-**Applications** groups processes into the programs they belong to. A program
-that has a window is listed under its own name and icon, and the processes it
-started are counted in its totals rather than listed. A process with no window
-above it is listed on its own.
+**Applications** groups processes into the programs they belong to, in two
+sections. **Applications** holds one row per program, under its own name and
+icon, with the processes it started counted in its totals rather than listed:
+the arrow beside a program opens it. **Processes** holds everything that belongs
+to no program, keeping its own tree, so a daemon and the helper it started stay
+a parent and a child.
+
+Each section heading carries the totals of what it holds and folds away like a
+row, so a closed section still says how much of the machine it accounts for.
+Sorting a column orders the rows within a section and leaves the headings
+where they are.
 
 **Process Tree** puts every process under its parent. An application's tree is
 folded away by default: the arrow beside a row opens it, and the processes

@@ -816,8 +816,18 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
         .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
             for position in range {
                 let row_index = visible[position];
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::click());
+                let heading = app
+                    .rows
+                    .get(row_index)
+                    .is_some_and(crate::apps::Row::is_heading);
+                // A heading names a section rather than standing for a
+                // process, so it takes no click and opens no menu.
+                let sense = if heading {
+                    Sense::hover()
+                } else {
+                    Sense::click()
+                };
+                let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), sense);
                 if rect.bottom() < ui.clip_rect().top() || rect.top() > ui.clip_rect().bottom() {
                     continue;
                 }
@@ -829,6 +839,9 @@ fn table_with(app: &mut App, ui: &mut egui::Ui, visible: &[usize], columns: &[Co
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::Role::Label, true, row_description(entry))
                     });
+                }
+                if heading {
+                    continue;
                 }
                 if response.clicked() {
                     clicked = Some((row_index, egui::PointerButton::Primary));
@@ -949,12 +962,83 @@ fn row(
     let Some(entry) = app.rows.get(position).cloned() else {
         return;
     };
+    let palette = palette(ui);
+    let painter = ui.painter_at(rect);
+
+    // A heading is a band across the whole table that names the section under
+    // it and adds up what that section holds. It stands for no process, so it
+    // takes no selection, but it folds like a row.
+    if entry.is_heading() {
+        painter.rect_filled(rect, 0.0, ui.visuals().widgets.noninteractive.bg_fill);
+        let arrow = Rect::from_center_size(
+            egui::pos2(rect.left() + ROW_MARGIN + ARROW / 2.0, rect.center().y),
+            vec2(ARROW, ARROW),
+        );
+        let points = if entry.folded {
+            vec![
+                egui::pos2(arrow.left() + 3.0, arrow.top() + 2.0),
+                egui::pos2(arrow.right() - 2.0, arrow.center().y),
+                egui::pos2(arrow.left() + 3.0, arrow.bottom() - 2.0),
+            ]
+        } else {
+            vec![
+                egui::pos2(arrow.left() + 2.0, arrow.top() + 3.0),
+                egui::pos2(arrow.right() - 2.0, arrow.top() + 3.0),
+                egui::pos2(arrow.center().x, arrow.bottom() - 2.0),
+            ]
+        };
+        painter.add(egui::Shape::convex_polygon(
+            points,
+            palette.weak_text,
+            Stroke::NONE,
+        ));
+        painter.text(
+            egui::pos2(arrow.right() + 6.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            entry.name.to_uppercase(),
+            FontId::proportional(10.0),
+            palette.weak_text,
+        );
+        // The section's own totals, in the columns they belong to.
+        for (column, place) in places {
+            let cell = Rect::from_min_size(
+                egui::pos2(rect.left() + place.left(), rect.top()),
+                vec2(place.width(), rect.height()),
+            );
+            let text = match column {
+                Column::Cpu => format::percent(entry.totals.cpu),
+                Column::Memory => format::bytes(entry.totals.memory),
+                Column::Disk => format::rate(entry.totals.disk_read + entry.totals.disk_write),
+                Column::Network => format::rate(entry.totals.net_read + entry.totals.net_write),
+                Column::Gpu if entry.totals.gpu > 0.0 => format::percent(entry.totals.gpu),
+                Column::Threads => entry.totals.count.to_string(),
+                _ => continue,
+            };
+            painter.text(
+                egui::pos2(cell.right() - ROW_MARGIN, cell.center().y),
+                Align2::RIGHT_CENTER,
+                text,
+                FontId::proportional(11.0),
+                palette.weak_text,
+            );
+        }
+        if ui
+            .interact(
+                arrow,
+                ui.scope_id().with(("section", entry.name.as_str())),
+                Sense::click(),
+            )
+            .clicked()
+        {
+            app.toggle_section(entry.section.expect("a heading names its section"));
+        }
+        return;
+    }
+
     let selected = entry
         .pids
         .first()
         .is_some_and(|pid| app.selection.contains(pid));
-    let palette = palette(ui);
-    let painter = ui.painter_at(rect);
 
     if selected {
         painter.rect_filled(rect, 0.0, ui.visuals().selection.bg_fill);

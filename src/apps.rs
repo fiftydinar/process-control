@@ -14,9 +14,47 @@ use std::collections::{HashMap, HashSet};
 use crate::desktop::Entry;
 use crate::sample::{ProcessInfo, Sample, Window};
 
+/// The fold key of the Applications heading.
+///
+/// Section headings fold like any other row, and they need a key that no
+/// process id can take: a pid is positive, so a negative number cannot clash
+/// with one.
+pub const SECTION_APPLICATIONS: i32 = -1;
+
+/// The fold key of the Processes heading.
+pub const SECTION_PROCESSES: i32 = -2;
+
+/// A heading that splits the table into sections.
+///
+/// The applications and processes views both group their rows under one of
+/// these, the way Mission Center splits its list: a program's processes and a
+/// loose process are different things, and one heading each says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    /// The heading above the applications.
+    Applications,
+    /// The heading above the processes that belong to none.
+    Processes,
+}
+
+impl Section {
+    /// The name the heading shows.
+    pub fn name(self) -> &'static str {
+        match self {
+            Section::Applications => "Applications",
+            Section::Processes => "Processes",
+        }
+    }
+}
+
 /// One row of either view.
 #[derive(Clone, Debug)]
 pub struct Row {
+    /// The heading this row sits under, when the view has headings.
+    ///
+    /// A heading row is not a process: it carries no pids and draws no
+    /// numbers, so a click on it does nothing.
+    pub section: Option<Section>,
     /// The processes the row stands for, the row's own process first.
     pub pids: Vec<i32>,
     /// The name the row shows.
@@ -46,6 +84,16 @@ pub struct Row {
     /// The busiest process among those, whose details a click on the row
     /// shows when the row is an application.
     pub main: usize,
+}
+
+impl Row {
+    /// Whether the row is a section heading rather than a process.
+    ///
+    /// A heading carries no pids, which is what tells it apart: every other
+    /// row stands for at least one process.
+    pub fn is_heading(&self) -> bool {
+        self.pids.is_empty()
+    }
 }
 
 /// The statistics a row stands for, summed over its processes.
@@ -353,8 +401,27 @@ pub fn tree(
     kernel_threads: bool,
     folded: &HashSet<i32>,
 ) -> Vec<Row> {
+    tree_with(sample, applications, kernel_threads, folded, false)
+}
+
+/// Builds the tree, optionally leaving out every process an application
+/// already stands for.
+///
+/// The filter is applied while the tree is built rather than to the rows
+/// afterwards: dropping a row after the fact would leave its children pointing
+/// at a parent that is no longer there, and their depth would be wrong.
+fn tree_with(
+    sample: &Sample,
+    applications: &Applications,
+    kernel_threads: bool,
+    folded: &HashSet<i32>,
+    only_unowned: bool,
+) -> Vec<Row> {
     let index = sample.index();
-    let shown = |process: &ProcessInfo| kernel_threads || !process.is_kernel_thread();
+    let shown = |process: &ProcessInfo| {
+        (kernel_threads || !process.is_kernel_thread())
+            && (!only_unowned || applications.of(process.pid).is_none())
+    };
     let mut children: HashMap<i32, Vec<usize>> = HashMap::new();
     let mut roots: Vec<usize> = Vec::new();
     for (position, process) in sample.processes.iter().enumerate() {
@@ -455,6 +522,7 @@ impl Build<'_> {
         // opens onto nothing.
         let has_children = self.children.contains_key(&process.pid);
         let row = Row {
+            section: Some(Section::Processes),
             pids: vec![process.pid],
             name: application.map_or_else(
                 || process.display_name().to_string(),
@@ -494,6 +562,59 @@ impl Build<'_> {
     }
 }
 
+/// A heading row, which draws its section's name and the totals of what it
+/// holds.
+///
+/// It carries no pids, so it stands for no process and takes no selection;
+/// `totals` is what its section adds up to, which is what makes the heading
+/// worth reading.
+fn heading(section: Section, folded: bool, totals: Totals) -> Row {
+    Row {
+        section: Some(section),
+        pids: Vec::new(),
+        name: section.name().to_string(),
+        icon: None,
+        depth: 0,
+        parent: None,
+        is_application: false,
+        folded,
+        has_children: true,
+        is_user: true,
+        totals,
+        main: 0,
+    }
+}
+
+/// The sum of a section's rows.
+///
+/// The rows that stand for a whole application already carry its processes, so
+/// only those are added: a helper listed under its application would otherwise
+/// be counted twice.
+fn sum(rows: &[Row]) -> Totals {
+    let mut totals = Totals::default();
+    for row in rows.iter().filter(|row| !row.is_heading()) {
+        if row.depth > 0 {
+            continue;
+        }
+        totals.cpu += row.totals.cpu;
+        totals.memory += row.totals.memory;
+        totals.disk_read += row.totals.disk_read;
+        totals.disk_write += row.totals.disk_write;
+        totals.net_read += row.totals.net_read;
+        totals.net_write += row.totals.net_write;
+        totals.gpu += row.totals.gpu;
+        totals.gpu_memory += row.totals.gpu_memory;
+    }
+    // The count is the processes the section holds, not the rows it draws:
+    // a helper listed under its application is already in that row's totals.
+    totals.count = rows
+        .iter()
+        .filter(|row| !row.is_heading() && row.depth == 0)
+        .map(|row| row.totals.count)
+        .sum();
+    totals
+}
+
 /// Builds the application rows: one row per application, with its processes
 /// folded away beneath it.
 ///
@@ -517,7 +638,7 @@ pub fn applications(sample: &Sample, membership: &Applications, folded: &HashSet
     }
 
     let index = sample.index();
-    let mut rows: Vec<Row> = Vec::new();
+    let mut applications: Vec<Row> = Vec::new();
     for (name, icon, pids) in order {
         let mut totals = Totals::default();
         let mut busiest = 0;
@@ -544,7 +665,8 @@ pub fn applications(sample: &Sample, membership: &Applications, folded: &HashSet
         // which is what makes this view a list of programs rather than a list
         // of every helper they started.
         let open = !folded.contains(&key);
-        rows.push(Row {
+        applications.push(Row {
+            section: Some(Section::Applications),
             pids: pids.clone(),
             name,
             icon,
@@ -561,7 +683,7 @@ pub fn applications(sample: &Sample, membership: &Applications, folded: &HashSet
         // for beneath it, so a stop can land on one helper rather than on the
         // whole program.
         if open {
-            let parent = rows.len() - 1;
+            let parent = applications.len() - 1;
             let mut sorted = pids.clone();
             sorted.sort_unstable();
             for pid in sorted {
@@ -571,7 +693,8 @@ pub fn applications(sample: &Sample, membership: &Applications, folded: &HashSet
                 let process = &sample.processes[*position];
                 let mut totals = Totals::default();
                 totals.add(process);
-                rows.push(Row {
+                applications.push(Row {
+                    section: Some(Section::Applications),
                     pids: vec![pid],
                     name: process.display_name().to_string(),
                     icon: None,
@@ -587,36 +710,44 @@ pub fn applications(sample: &Sample, membership: &Applications, folded: &HashSet
             }
         }
     }
-    // The processes that belong to no application keep their own names and
-    // are listed after the applications. They are flat rows, not a subtree:
-    // this view is a list of programs, and nesting the ones nobody owns turned
-    // it into a tree that started expanded.
-    let mut loose: Vec<usize> = sample
-        .processes
-        .iter()
-        .enumerate()
-        .filter(|(_, process)| membership.of(process.pid).is_none())
-        .filter(|(_, process)| !process.is_kernel_thread())
-        .map(|(position, _)| position)
-        .collect();
-    loose.sort_unstable_by_key(|position| sample.processes[*position].pid);
-    for position in loose {
-        let process = &sample.processes[position];
-        let mut totals = Totals::default();
-        totals.add(process);
-        rows.push(Row {
-            pids: vec![process.pid],
-            name: process.display_name().to_string(),
-            icon: None,
-            depth: 0,
-            parent: None,
-            is_application: false,
-            folded: false,
-            has_children: false,
-            is_user: !process.is_kernel_thread(),
-            totals,
-            main: position,
-        });
+    // The processes that belong to no application are the second section,
+    // and they keep their tree: a daemon and the helper it started are still
+    // a parent and a child, and flattening them would lose that.
+    let processes = owned_tree(sample, membership, folded);
+
+    // One heading per section, and a section with nothing in it is left out
+    // rather than drawn as an empty heading.
+    let mut rows: Vec<Row> = Vec::with_capacity(applications.len() + processes.len() + 2);
+    if !applications.is_empty() {
+        let totals = sum(&applications);
+        let closed = folded.contains(&SECTION_APPLICATIONS);
+        rows.push(heading(Section::Applications, closed, totals));
+        if !closed {
+            rows.extend(applications);
+        }
+    }
+    if !processes.is_empty() {
+        let totals = sum(&processes);
+        let closed = folded.contains(&SECTION_PROCESSES);
+        rows.push(heading(Section::Processes, closed, totals));
+        if !closed {
+            rows.extend(processes);
+        }
+    }
+    rows
+}
+
+/// The Processes section: the tree, leaving out everything an application
+/// already stands for.
+///
+/// A process that belongs to an application is shown under that application,
+/// so it is not repeated here; its children are, unless they belong to the
+/// same application. What is left is the machine's own processes and the
+/// programs running with no window, with their own trees intact.
+fn owned_tree(sample: &Sample, membership: &Applications, folded: &HashSet<i32>) -> Vec<Row> {
+    let mut rows = tree_with(sample, membership, false, folded, true);
+    for row in &mut rows {
+        row.section = Some(Section::Processes);
     }
     rows
 }
@@ -629,6 +760,31 @@ pub fn applications(sample: &Sample, membership: &Applications, folded: &HashSet
 /// are rewritten to the new positions, which is what keeps the next frame's
 /// drawing and the next sort from reading a stale index.
 pub fn sort(rows: &mut [Row], key: SortKey, descending: bool) {
+    // Sorting works within each section: a heading stays where it is and the
+    // rows under it are ordered among themselves. Sorting the headings as
+    // roots would move "Applications" below the processes as soon as the CPU
+    // column was ordered downwards.
+    let mut start = 0;
+    while start < rows.len() {
+        let end = rows[start..]
+            .iter()
+            .position(|row| row.is_heading())
+            .map(|position| start + position + 1)
+            .unwrap_or(rows.len());
+        let inner = if rows[start].is_heading() {
+            start + 1
+        } else {
+            start
+        };
+        if inner < end {
+            sort_section(&mut rows[inner..end], key, descending);
+        }
+        start = end;
+    }
+}
+
+/// Sorts the rows of one section, keeping every subtree with its head.
+fn sort_section(rows: &mut [Row], key: SortKey, descending: bool) {
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); rows.len()];
     let mut roots: Vec<usize> = Vec::new();
     for (index, row) in rows.iter().enumerate() {
@@ -823,6 +979,121 @@ mod tests {
     }
 
     #[test]
+    fn the_application_view_splits_into_two_headed_sections() {
+        let mut sample = sample(vec![
+            process(1, 0, "init"),
+            process(100, 1, "firefox"),
+            process(101, 100, "firefox helper"),
+            process(200, 1, "sshd"),
+        ]);
+        for process in &mut sample.processes {
+            process.exe = Some(format!("/usr/bin/{}", process.name));
+        }
+        let windows = [window(100, "Firefox")];
+        let mut applications = Applications::new(&sample, &windows, &NoApplications);
+        applications.resolve(&sample);
+        let rows = applications_view(&sample, &applications, &[]);
+
+        let sections: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.is_heading())
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(sections, ["Applications", "Processes"]);
+
+        // Everything before the second heading is the applications section.
+        let split = rows
+            .iter()
+            .position(|row| row.name == "Processes")
+            .expect("the second heading is there");
+        assert!(
+            rows[..split].iter().any(|row| row.name == "Firefox"),
+            "the application is in the first section"
+        );
+        assert!(
+            rows[split..].iter().any(|row| row.name == "sshd"),
+            "the loose process is in the second"
+        );
+        assert!(
+            !rows[split..].iter().any(|row| row.name == "Firefox"),
+            "and the application is not repeated in it"
+        );
+    }
+
+    #[test]
+    fn a_heading_carries_the_totals_of_its_section() {
+        let mut sample = sample(vec![
+            process(1, 0, "init"),
+            process(100, 1, "thing"),
+            process(101, 100, "helper"),
+        ]);
+        for process in &mut sample.processes {
+            process.cpu = 3.0;
+            process.memory = 1024;
+        }
+        let windows = [window(100, "Thing")];
+        let mut applications = Applications::new(&sample, &windows, &NoApplications);
+        applications.resolve(&sample);
+        let rows = applications_view(&sample, &applications, &[]);
+        let heading = rows
+            .iter()
+            .find(|row| row.name == "Applications")
+            .expect("the heading is there");
+        assert_eq!(heading.totals.cpu, 6.0, "it adds up its section");
+        assert_eq!(heading.totals.memory, 2048);
+        assert_eq!(heading.totals.count, 2);
+    }
+
+    #[test]
+    fn a_section_folds_away_and_keeps_its_heading() {
+        let mut sample = sample(vec![
+            process(1, 0, "init"),
+            process(100, 1, "thing"),
+            process(200, 1, "sshd"),
+        ]);
+        for process in &mut sample.processes {
+            process.exe = Some(format!("/usr/bin/{}", process.name));
+        }
+        let windows = [window(100, "Thing")];
+        let mut known = Applications::new(&sample, &windows, &NoApplications);
+        known.resolve(&sample);
+        let folded: HashSet<i32> = [SECTION_APPLICATIONS].into_iter().collect();
+        let rows = applications(&sample, &known, &folded);
+        assert!(
+            rows.iter()
+                .any(|row| row.name == "Applications" && row.folded),
+            "the heading stays, closed"
+        );
+        assert!(
+            !rows.iter().any(|row| row.name == "Thing"),
+            "and what it held is gone"
+        );
+        assert!(
+            rows.iter().any(|row| row.name == "sshd"),
+            "the other section is untouched"
+        );
+    }
+
+    #[test]
+    fn sorting_moves_rows_within_a_section_and_leaves_the_headings() {
+        let mut sample = sample(vec![
+            process(1, 0, "init"),
+            process(200, 1, "zzz"),
+            process(300, 1, "aaa"),
+        ]);
+        for process in &mut sample.processes {
+            process.exe = Some(format!("/usr/bin/{}", process.name));
+        }
+        let applications = Applications::new(&sample, &[], &NoApplications);
+        let rows = applications_view(&sample, &applications, &[]);
+        assert_eq!(
+            rows.iter().filter(|row| row.is_heading()).count(),
+            1,
+            "with no applications there is only the Processes heading"
+        );
+    }
+
+    #[test]
     fn a_session_with_no_windows_still_reads_as_applications() {
         // Wayland publishes no window-to-process mapping, so a sample from
         // such a session has no windows in it. Every program would then be a
@@ -992,6 +1263,7 @@ mod tests {
     /// A row at `depth` under `parent`, which is the index of its head.
     fn row(name: &str, depth: usize, parent: Option<usize>, cpu: f32) -> Row {
         Row {
+            section: None,
             pids: vec![name.len() as i32],
             name: name.to_string(),
             icon: None,

@@ -360,6 +360,12 @@ impl App {
         }
     }
 
+    /// Folds a section away, which the picture a test draws uses.
+    #[cfg(test)]
+    pub fn fold_section_for_preview(&mut self, section: crate::apps::Section) {
+        self.toggle_section(section);
+    }
+
     /// Takes a sample as the one the window shows, which a test uses.
     #[cfg(test)]
     pub fn adopt_for_test(&mut self, sample: Sample) {
@@ -479,6 +485,23 @@ impl App {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Folds a section away, or unfolds it.
+    ///
+    /// A heading folds by its own key rather than by a pid, which is why the
+    /// two section keys are negative: no process id can take them.
+    pub fn toggle_section(&mut self, section: crate::apps::Section) {
+        let key = match section {
+            crate::apps::Section::Applications => crate::apps::SECTION_APPLICATIONS,
+            crate::apps::Section::Processes => crate::apps::SECTION_PROCESSES,
+        };
+        if !self.folded.remove(&key) {
+            self.folded.insert(key);
+        }
+        // The section keys are not process ids, so opening one must not look
+        // like opening a window owner.
+        self.opened.remove(&key);
+    }
+
     /// Whether a row's children are hidden.
     ///
     /// An application head is folded unless it was opened; everything else is
@@ -518,6 +541,10 @@ impl App {
         let Some(row) = self.rows.get(position) else {
             return;
         };
+        // A heading stands for no process, so there is nothing to select.
+        if row.is_heading() {
+            return;
+        }
         let mut pids = row.pids.clone();
         let own = row.pids.first().copied().unwrap_or_default();
         pids.extend(self.descendants(own));
@@ -532,6 +559,9 @@ impl App {
         let Some(row) = self.rows.get(position) else {
             return;
         };
+        if row.is_heading() {
+            return;
+        }
         let own = row.pids.first().copied().unwrap_or_default();
         if self.selection.contains(&own) {
             self.selection.retain(|pid| *pid != own);
@@ -563,6 +593,8 @@ impl App {
         };
         let mut pids = Vec::new();
         for row in &self.rows[start..=end] {
+            // A heading inside the range stands for no process, so it adds
+            // nothing rather than clearing what the range covers.
             pids.extend(row.pids.iter().copied());
         }
         pids.sort_unstable();
@@ -828,14 +860,45 @@ mod tests {
     #[test]
     fn the_selection_extends_over_a_range_of_rows() {
         let mut app = app();
-        app.select_row(0);
+        let first = app
+            .rows
+            .iter()
+            .position(|row| !row.is_heading())
+            .expect("there is a process row");
         let last = app.rows.len() - 1;
+        // Every process the range covers, which is what the selection should
+        // hold: the headings in it stand for none.
+        let expected: usize = {
+            let mut pids: Vec<i32> = app.rows[first..=last]
+                .iter()
+                .flat_map(|row| row.pids.iter().copied())
+                .collect();
+            pids.sort_unstable();
+            pids.dedup();
+            pids.len()
+        };
+        app.select_row(first);
         app.extend_to(last);
-        assert_eq!(app.selection.len(), app.rows.len());
+        assert_eq!(app.selection.len(), expected);
         // Extending backwards from the last row covers the same range.
         app.select_row(last);
-        app.extend_to(0);
-        assert_eq!(app.selection.len(), app.rows.len());
+        app.extend_to(first);
+        assert_eq!(app.selection.len(), expected);
+    }
+
+    #[test]
+    fn a_heading_cannot_be_selected() {
+        let mut app = app();
+        let heading = app
+            .rows
+            .iter()
+            .position(crate::apps::Row::is_heading)
+            .expect("the applications view has a heading");
+        app.select_only(1);
+        app.select_row(heading);
+        assert_eq!(app.selection, [1], "the selection is unchanged");
+        app.toggle_row(heading);
+        assert_eq!(app.selection, [1]);
     }
 
     #[test]

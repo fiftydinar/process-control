@@ -23,6 +23,8 @@ pub struct Look {
     pub tree: bool,
     /// Whether the picture has the details panel open.
     pub details: bool,
+    /// Whether the applications section is folded away.
+    pub folded: bool,
 }
 
 impl Look {
@@ -31,6 +33,7 @@ impl Look {
         dark: true,
         tree: false,
         details: false,
+        folded: false,
     };
 
     /// The same in the light palette.
@@ -48,6 +51,12 @@ impl Look {
     /// The details panel, open on a process.
     pub const DETAILS: Self = Self {
         details: true,
+        ..Self::DARK
+    };
+
+    /// The applications section folded away, leaving its heading.
+    pub const FOLDED: Self = Self {
+        folded: true,
         ..Self::DARK
     };
 }
@@ -74,6 +83,9 @@ pub fn render(pixmap: &mut tiny_skia::Pixmap, look: Look) {
     app.applications.resolve(&app.sample);
     if look.tree {
         app.view = crate::apps::ViewMode::Tree;
+    }
+    if look.folded {
+        app.fold_section_for_preview(crate::apps::Section::Applications);
     }
     app.rebuild();
     if look.details {
@@ -420,6 +432,7 @@ mod tests {
         for (look, name) in [
             (Look::TREE, "process-control-tree.png"),
             (Look::DETAILS, "process-control-details.png"),
+            (Look::FOLDED, "process-control-folded.png"),
         ] {
             let mut pixmap = tiny_skia::Pixmap::new(1280, 800).expect("the pixmap is made");
             render(&mut pixmap, look);
