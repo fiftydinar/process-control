@@ -98,7 +98,23 @@ impl Index {
             self.by_class.entry(key).or_insert(position);
         }
         if let Some(name) = exec_name(&entry.exec) {
-            self.by_exec.entry(name.to_lowercase()).or_insert(position);
+            let key = name.to_lowercase();
+            // Several entries can run one program: Steam's own entry and a
+            // shortcut for each game all run `steam`. The shortcut is named
+            // and iconed after the game, and sorts before the program's own
+            // entry, so it must not take the executable's name from it.
+            match self.by_exec.get(&key).copied() {
+                Some(existing) => {
+                    if !names_program(&self.entries[existing], &name)
+                        && names_program(&entry, &name)
+                    {
+                        self.by_exec.insert(key, position);
+                    }
+                }
+                None => {
+                    self.by_exec.insert(key, position);
+                }
+            }
         }
         self.entries.push(entry);
     }
@@ -154,6 +170,29 @@ impl Index {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// Whether `entry` names the program an executable runs, rather than a
+/// shortcut that merely launches it.
+///
+/// A shortcut and the program it launches can share one executable: Steam
+/// and a desktop shortcut for a game both run `steam`, while the shortcut's
+/// name, icon and window class are the game's. The program's own entry is the
+/// one that calls itself after its executable, through its name, its
+/// `StartupWMClass` or its file name, so it is the one the executable name
+/// resolves to.
+fn names_program(entry: &Entry, executable: &str) -> bool {
+    let executable = executable.trim();
+    if executable.is_empty() {
+        return false;
+    }
+    let stem = entry.path.file_stem().and_then(|stem| stem.to_str());
+    entry
+        .startup_wm_class
+        .trim()
+        .eq_ignore_ascii_case(executable)
+        || entry.name.trim().eq_ignore_ascii_case(executable)
+        || stem.is_some_and(|stem| stem.eq_ignore_ascii_case(executable))
 }
 
 /// The names a window may carry to be matched to `entry`, lower cased.
@@ -471,6 +510,33 @@ Exec=nautilus
         let by_exec = index.matching(&[], Some("kitty"));
         assert_eq!(by_exec.map(|entry| entry.name.as_str()), Some("Kitty"));
         assert!(index.matching(&[], Some("no-such-program")).is_none());
+    }
+
+    #[test]
+    fn a_shared_executable_names_the_program_that_runs_it() {
+        // Steam ships one entry per game, and each runs `steam` with a game
+        // id. They are named and iconed after the game and sort before
+        // Steam's own entry, but the executable `steam` still has to name
+        // Steam, not the first game alphabetically.
+        let index = index_of(&[
+            (
+                "Counter-Strike 2",
+                "[Desktop Entry]\nName=Counter-Strike 2\nIcon=cs2\nExec=steam steam://rungameid/730\nStartupWMClass=cs2\n",
+            ),
+            (
+                "steam-AM",
+                "[Desktop Entry]\nName=Steam\nIcon=steam\nExec=/home/user/.local/bin/steam %U\nStartupWMClass=steam\n",
+            ),
+        ]);
+
+        let by_exec = index.matching(&[], Some("steam"));
+        assert_eq!(by_exec.map(|entry| entry.name.as_str()), Some("Steam"));
+        // The game's own window class still names the game.
+        let by_class = index.matching(&["cs2".to_string()], Some("steam"));
+        assert_eq!(
+            by_class.map(|entry| entry.name.as_str()),
+            Some("Counter-Strike 2")
+        );
     }
 
     #[test]
