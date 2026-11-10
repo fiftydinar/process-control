@@ -117,6 +117,15 @@ fn row_metrics(size: RowSize) -> RowMetrics {
 /// the number.
 const BAR_ALPHA: u8 = 46;
 
+/// How visible the guide lines that tie a child row to its parent are.
+const GUIDE_ALPHA: u8 = 80;
+
+/// The colour of those guide lines.
+fn guide_color(palette: theme::Palette) -> Color32 {
+    let [r, g, b, _] = palette.weak_text.to_srgba_unmultiplied();
+    Color32::from_rgba_unmultiplied(r, g, b, GUIDE_ALPHA)
+}
+
 /// The columns of the process table, left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Column {
@@ -1190,6 +1199,34 @@ fn row(
                     ),
                     vec2(metrics.arrow, metrics.arrow),
                 );
+                // A line per ancestor, and a stub from the nearest one to
+                // this row, make the tree readable without following the
+                // arrows back up by eye. The lines sit behind the arrows.
+                if entry.depth > 0 {
+                    let guide = Stroke::new(1.0, guide_color(palette));
+                    let center = |level: usize| {
+                        cell.left()
+                            + metrics.margin
+                            + level as f32 * metrics.indent
+                            + metrics.arrow / 2.0
+                    };
+                    for level in 0..entry.depth {
+                        let x = center(level);
+                        painter.line_segment(
+                            [egui::pos2(x, cell.top()), egui::pos2(x, cell.bottom())],
+                            guide,
+                        );
+                    }
+                    let parent = center(entry.depth - 1);
+                    let child = center(entry.depth);
+                    painter.line_segment(
+                        [
+                            egui::pos2(parent, cell.center().y),
+                            egui::pos2(child, cell.center().y),
+                        ],
+                        guide,
+                    );
+                }
                 if entry.has_children {
                     let points = if entry.folded {
                         vec![
