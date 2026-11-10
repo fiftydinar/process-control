@@ -284,14 +284,20 @@ impl Applications {
             windows: HashMap::new(),
         };
         let by_pid: HashMap<i32, usize> = sample.index();
-        // A session with no window information at all is a Wayland one: the
-        // compositor does not publish which process owns a window to anybody
-        // but itself. Without a fallback every row would be named after its
-        // executable and drawn with a placeholder, so a program is recognised
-        // by the program it runs instead. That is enough for the name and the
-        // icon, and it is what makes the view still read as applications.
-        if windows.is_empty() {
+        // A Wayland session publishes only its Xwayland windows, so a
+        // windowless program (Steam in the tray, for example) would drop out
+        // of the applications as soon as any X11 window, such as a game's, is
+        // open. Match those processes by the program they run instead, and
+        // keep doing it when there is no window at all, as on a session with
+        // no Xwayland. That is enough for the name and the icon, and it is
+        // what makes the view still read as applications.
+        if windows.is_empty() || sample.windows_are_partial {
             for process in &sample.processes {
+                // A window already named this process, and that match is the
+                // better one.
+                if applications.owners.contains_key(&process.pid) {
+                    continue;
+                }
                 let Some(executable) = process.executable_name() else {
                     continue;
                 };
@@ -1253,6 +1259,86 @@ mod tests {
             "and carries its icon"
         );
         assert_eq!(app.totals.count, 2, "its helper is counted with it");
+    }
+
+    #[test]
+    fn a_windowless_program_stays_an_application_on_wayland() {
+        // Wayland publishes only the Xwayland windows, so a sample can hold
+        // a game's window while the Steam client sits in the tray with none.
+        // Steam must still be an application rather than fall out of the
+        // list because one window exists.
+        let mut sample = sample(vec![
+            process(1, 0, "init"),
+            process(100, 1, "steam"),
+            process(101, 100, "steamwebhelper"),
+            process(200, 1, "Risk of Rain Returns.exe"),
+        ]);
+        sample.processes[1].exe = Some("/usr/bin/steam".to_string());
+        sample.processes[2].exe = Some("/usr/bin/steamwebhelper".to_string());
+        sample.processes[3].exe = Some("/games/Risk of Rain Returns.exe".to_string());
+        sample.windows = vec![window(200, "steam_app_1337520")];
+        sample.windows_are_partial = true;
+
+        let steam = Entry {
+            name: "Steam".to_string(),
+            icon: "steam".to_string(),
+            exec: "/usr/bin/steam %U".to_string(),
+            ..Entry::default()
+        };
+        let game = Entry {
+            name: "Risk of Rain Returns".to_string(),
+            icon: "risk-of-rain-returns".to_string(),
+            exec: "steam steam://rungameid/1337520".to_string(),
+            startup_wm_class: "steam_app_1337520".to_string(),
+            ..Entry::default()
+        };
+        struct Lookup<'a> {
+            steam: &'a Entry,
+            game: &'a Entry,
+        }
+        impl EntryLookup for Lookup<'_> {
+            fn matching(&self, classes: &[String], executable: Option<&str>) -> Option<&Entry> {
+                if classes
+                    .iter()
+                    .any(|class| class.eq_ignore_ascii_case("steam_app_1337520"))
+                {
+                    return Some(self.game);
+                }
+                self.by_exec_name(executable?)
+            }
+
+            fn by_exec_name(&self, executable: &str) -> Option<&Entry> {
+                (executable == "steam").then_some(self.steam)
+            }
+        }
+
+        let lookup = Lookup {
+            steam: &steam,
+            game: &game,
+        };
+        let mut applications = Applications::new(&sample, &sample.windows, &lookup);
+        applications.resolve(&sample);
+        let mut owners: Vec<i32> = applications.owners.keys().copied().collect();
+        owners.sort_unstable();
+        assert_eq!(
+            owners,
+            [100, 200],
+            "the game's window and the windowless Steam process both own one"
+        );
+
+        let rows = applications_view(&sample, &applications, &[]);
+        let steam_row = rows
+            .iter()
+            .find(|row| row.name == "Steam")
+            .expect("Steam is still an application");
+        assert_eq!(
+            steam_row.totals.count, 2,
+            "its web helper is counted with it"
+        );
+        assert!(
+            rows.iter().any(|row| row.name == "Risk of Rain Returns"),
+            "and the game keeps its own row"
+        );
     }
 
     #[test]

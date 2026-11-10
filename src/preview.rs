@@ -368,6 +368,7 @@ fn sample() -> crate::sample::Sample {
                 "Process Control",
             ),
         ],
+        windows_are_partial: true,
         error: None,
     }
 }

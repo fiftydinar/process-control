@@ -130,6 +130,7 @@ impl Reader {
         sample.error = walk.error.take();
         sample.processes = walk.processes.clone();
         sample.windows = windows::windows();
+        sample.windows_are_partial = windows::on_wayland();
 
         self.processes = Some(walk);
         self.started = Some(now);

@@ -161,6 +161,10 @@ pub struct Sample {
     pub elapsed: f32,
     /// The windows the display server had at this read.
     pub windows: Vec<Window>,
+    /// Whether the window list holds only the Xwayland windows, as it does
+    /// on a Wayland session, so a program with no window may still be an
+    /// application.
+    pub windows_are_partial: bool,
     /// Why the sample is empty or partial, when it is.
     pub error: Option<String>,
 }

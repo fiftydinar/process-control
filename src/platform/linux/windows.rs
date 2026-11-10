@@ -29,6 +29,16 @@ const WM_PID: &str = "_NET_WM_PID";
 /// `_NET_WM_NAME`: the title in UTF-8.
 const WM_NAME_UTF8: &str = "_NET_WM_NAME";
 
+/// Whether this is a Wayland session.
+///
+/// Wayland publishes only the Xwayland windows to other programs, so the
+/// list this module reads is partial: a native Wayland window, or a program
+/// sitting in the tray, is missing from it.
+pub fn on_wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|kind| kind.eq_ignore_ascii_case("wayland"))
+}
+
 /// Every managed window on the display.
 ///
 /// An empty list is what a session with no X display gives: a Wayland session
