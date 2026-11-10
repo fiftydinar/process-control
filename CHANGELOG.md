@@ -1,4 +1,14 @@
 
+## [0.1.5](https://github.com/fiftydinar/process-control/compare/v0.1.4...v0.1.5) - 2026-11-10
+
+### Bug Fixes
+
+- *(desktop)* Name the program when shortcuts share its executable - ([0ae343c](https://github.com/fiftydinar/process-control/commit/0ae343c069da80acd2e231fddffd4511718e3f43))
+
+### Miscellaneous Tasks
+
+- Drop the macOS and Windows build paths - ([e0da2d9](https://github.com/fiftydinar/process-control/commit/e0da2d961474d225daf0174145fe4cc393566d05))
+
 ## [0.1.4](https://github.com/fiftydinar/process-control/compare/v0.1.3...v0.1.4) - 2026-11-10
 
 ### Bug Fixes
